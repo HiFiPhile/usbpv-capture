@@ -1,0 +1,42 @@
+# CMake and compiler outputs
+/build/
+/build-*/
+/cmake-build-*/
+/CMakeUserPresets.json
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.exe
+*.dll
+*.so
+/usbpv_capture
+/usbpv_test_lib
+__pycache__/
+*.py[cod]
+**/bin/
+**/obj/
+
+# Keep the bundled, architecture-specific vendor binaries.
+!vendor/**/*.dll
+!vendor/**/*.so
+!vendor/original/sample-binaries/**/*.exe
+
+# Captures can be large and may contain device/application data.
+/captures/*
+!/captures/.gitkeep
+*.pcap
+*.pcapng
+*.pcapng.events.jsonl
+*.pcapng.summary.json
+
+# IDE and OS files
+/.vs/
+/.vscode/
+*.user
+*.suo
+.DS_Store
+Thumbs.db
