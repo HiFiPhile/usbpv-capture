@@ -90,6 +90,45 @@ void timestamps_and_flags() {
   require(parser.feed(wire.data(), wire.size(), 3000000000ULL), "idle gap stream");
   require(packets.back().ns == 3000000000ULL, "idle host reanchor");
 }
+void overflow_timestamps() {
+  // Untimed overflow reports must not inject a synthetic counter wrap.
+  for (std::uint32_t ticks : {100U, 0xfffffeU}) {
+    std::vector<std::uint8_t> wire{0x55, 1, 1, 0x57};
+    append_packet(wire, 0x60, ticks, 1);
+    wire.insert(wire.end(), {0xff, 7, 0xa5, 0xa5, 0xff, 9, 0, 0});
+    append_packet(wire, 0x60, (ticks + 3) & 0xffffffU, 1);
+    for (std::size_t split = 0; split <= wire.size(); ++split) {
+      std::vector<Packet> packets;
+      usbpv::ProtocolParser parser(&packets, receive);
+      require(parser.feed(wire.data(), split, 1000000000ULL) &&
+              parser.feed(wire.data() + split, wire.size() - split, 1000000000ULL),
+              "overflow split stream");
+      require(packets.size() == 4 && packets[3].ns - packets[0].ns == 50,
+              "overflow changed device timestamp interval");
+      require(packets[1].ns == packets[0].ns && packets[2].ns == packets[0].ns &&
+              packets[1].status == 0xf0 && packets[1].bytes == std::vector<std::uint8_t>{7} &&
+              packets[2].bytes == std::vector<std::uint8_t>{9}, "overflow event timestamp/payload");
+    }
+  }
+  std::vector<Packet> packets;
+  usbpv::ProtocolParser parser(&packets, receive);
+  const std::vector<std::uint8_t> overflow{0xff, 7, 0, 0};
+  const std::vector<std::uint8_t> start{0x55, 1, 1, 0x57};
+  require(parser.feed(start.data(), start.size(), 1000000000ULL) &&
+          parser.feed(overflow.data(), overflow.size(), 1000000000ULL), "initial overflow");
+  std::vector<std::uint8_t> wire;
+  append_packet(wire, 0x60, 100, 1);
+  require(parser.feed(wire.data(), wire.size(), 1100000000ULL), "first timed packet");
+  require(packets[0].ns == 1000000000ULL && packets[1].ns == 1100000000ULL,
+          "overflow initialized device clock");
+  // Overflow traffic must not hide a gap longer than one device-clock period.
+  require(parser.feed(overflow.data(), overflow.size(), 1300000000ULL) &&
+          parser.feed(overflow.data(), overflow.size(), 1400000000ULL), "idle overflows");
+  wire.clear();
+  append_packet(wire, 0x60, 103, 1);
+  require(parser.feed(wire.data(), wire.size(), 1500000000ULL), "packet after idle overflow");
+  require(packets.back().ns == 1500000000ULL, "overflow suppressed idle clock reanchor");
+}
 void malformed() {
   const std::vector<std::vector<std::uint8_t>> bad{
       {0x60, 0, 0, 0, 0, 0}, {0x60, 0, 0, 0, 0x1b, 4},
@@ -163,6 +202,6 @@ void commands() {
 }
 }  // namespace
 int main() {
-  framing(); timestamps_and_flags(); malformed(); all_lengths_and_flags(); commands();
+  framing(); timestamps_and_flags(); overflow_timestamps(); malformed(); all_lengths_and_flags(); commands();
   std::cout << "protocol tests passed\n";
 }

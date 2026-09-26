@@ -33,6 +33,10 @@ One native reader thread owns an eight-entry ring of 64 KiB WinUSB reads (512 Ki
 total transport reserve) and the stream parser. Callbacks copy complete packets into the existing locked,
 bounded writer queue. There is no vendor producer/consumer list or vendor
 capture thread in this path. The device handle is opened exclusively.
+Enumeration and serial selection skip individual interfaces that cannot be
+opened or identified, so a busy sniffer does not block another available one.
+If every probe fails, enumeration reports the first probe error; configuration
+and startup failures on the selected sniffer still fail capture.
 
 Start waits for the device's start marker. Stop waits for the stop marker
 with a two-second deadline, then cancels and reaps every remaining overlapped
@@ -107,6 +111,9 @@ nanoseconds. After a host-observed idle gap longer than one counter period
 (about 280 ms), absolute timing is re-anchored to host time because the number
 of unobserved wraps is ambiguous. Absolute timestamps include transport latency;
 continuous-stream intervals come from the device clock.
+Overflow records carry no ticks: their event timestamp repeats the last timed
+record (or uses host time before the first timed record). They never advance
+the device-clock accumulator or refresh its idle-gap anchor.
 
 ## FPGA image provenance
 

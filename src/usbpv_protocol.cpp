@@ -120,7 +120,12 @@ bool ProtocolParser::feed(const std::uint8_t* data, std::size_t size,
         return fail("unexpected stream command");
       stopped_ = true;
     } else if (tag == 0xff) {
-      emit(0, record_.data() + 1, 1, 0xf0, host_ns);
+      // Overflow records have no device ticks. Reuse the last packet/event
+      // time (host time before the first timed record), without changing any
+      // clock state, including the host-gap anchor used for idle recovery.
+      const auto ns = have_time_ ? last_ns_ : host_ns;
+      callback_(context_, static_cast<unsigned long>(ns / 1000000000ULL),
+                static_cast<unsigned long>(ns % 1000000000ULL), record_.data() + 1, 1, 0xf0);
     } else {
       const auto ticks = record_[1] | (record_[2] << 8) | (record_[3] << 16);
       emit(ticks, nullptr, 0, tag & 0xf0, host_ns);

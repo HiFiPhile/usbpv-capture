@@ -1,6 +1,7 @@
 #define NOMINMAX
 #include "usbpv_native.hpp"
 #include "usbpv_protocol.hpp"
+#include "usbpv_device_scan.hpp"
 #include "usbpv_fpga.hpp"
 #include <windows.h>
 #include <setupapi.h>
@@ -332,12 +333,7 @@ const char* UPV_CALL list_devices() {
   device_list.clear();
   last_error.clear();
   try {
-    for (const auto& path : device_paths()) {
-      Device device;
-      device.connect(path);
-      if (!device_list.empty()) device_list += ',';
-      device_list += device.serial;
-    }
+    device_list = detail::list_serials<Device>(device_paths());
   } catch (const std::exception& ex) {
     device_list.clear();
     last_error = ex.what();
@@ -361,24 +357,21 @@ UPV_HANDLE open_device_batched(const char* options, int size, void* context,
     if (!end || options + size - end != 12 || static_cast<unsigned char>(end[1]) > 2)
       throw std::runtime_error("native capture needs explicit speed and four filter pairs");
     const std::string serial(options, end);
-    for (const auto& path : device_paths()) {
-      auto device = std::make_unique<Device>();
-      device->connect(path);
-      if (device->serial != serial) continue;
-      device->configure(reinterpret_cast<const unsigned char*>(end + 1));
-      device->batch_service = batch_service;
-      device->worker = std::thread(&Device::capture, device.get(), context, callback, batch_end);
-      std::unique_lock<std::mutex> lock(device->mutex);
-      const bool ready = device->ready.wait_for(lock, std::chrono::seconds(4), [&] {
-        return device->started || device->broken.load(std::memory_order_acquire);
-      });
-      const std::string error = device->error;
-      lock.unlock();
-      if (!ready || !error.empty()) throw std::runtime_error(
-          error.empty() ? "native capture startup timed out" : error);
-      return device.release();
-    }
-    throw std::runtime_error("requested CH56x sniffer is not connected");
+    auto device = detail::find_device<Device>(device_paths(), serial);
+    // Once selected, configuration/startup errors must reach the caller;
+    // they are not failures probing an unrelated interface.
+    device->configure(reinterpret_cast<const unsigned char*>(end + 1));
+    device->batch_service = batch_service;
+    device->worker = std::thread(&Device::capture, device.get(), context, callback, batch_end);
+    std::unique_lock<std::mutex> lock(device->mutex);
+    const bool ready = device->ready.wait_for(lock, std::chrono::seconds(4), [&] {
+      return device->started || device->broken.load(std::memory_order_acquire);
+    });
+    const std::string error = device->error;
+    lock.unlock();
+    if (!ready || !error.empty()) throw std::runtime_error(
+        error.empty() ? "native capture startup timed out" : error);
+    return device.release();
   } catch (const std::exception& ex) {
     last_error = ex.what();
     return nullptr;
