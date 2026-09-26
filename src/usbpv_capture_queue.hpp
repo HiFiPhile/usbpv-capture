@@ -35,17 +35,24 @@ struct CaptureContext {
   std::atomic<bool> accepting{false};
   // Native backend has one callback owner. Legacy callbacks keep using push.
   bool native_batching = false;
-  bool batch_has_callbacks = false;
+  std::uint64_t pending_callbacks = 0;
+  std::int64_t batch_deadline_ns = 0;
   std::vector<PacketSlot> pending;
   std::size_t pending_count = 0;
 };
 
+inline void publish_callback_activity(CaptureContext& context, std::int64_t now_ns) {
+  if (context.pending_callbacks) {
+    context.counters.callbacks.fetch_add(context.pending_callbacks, std::memory_order_relaxed);
+    context.counters.last_callback_ns.store(now_ns, std::memory_order_relaxed);
+    context.pending_callbacks = 0;
+  }
+}
+
 inline void flush_callback_batch(void* opaque) {
   auto& context = *static_cast<CaptureContext*>(opaque);
-  if (context.batch_has_callbacks) {
-    context.counters.last_callback_ns.store(steady_now_ns(), std::memory_order_relaxed);
-    context.batch_has_callbacks = false;
-  }
+  if (context.pending_callbacks) publish_callback_activity(context, steady_now_ns());
+  context.batch_deadline_ns = 0;
   if (!context.pending_count) return;
   const auto accepted = context.queue.push_batch(context.pending.data(), context.pending_count);
   std::uint64_t packets = 0, bytes = 0, events = 0, overflows = 0;
@@ -64,13 +71,34 @@ inline void flush_callback_batch(void* opaque) {
   context.pending_count = 0;
 }
 
+inline bool service_callback_batch_at(CaptureContext& context, bool force, std::int64_t now_ns) {
+  // Activity tracking remains per transfer even when publication is deferred.
+  // Flushes without callbacks must not extend the host idle timeout.
+  publish_callback_activity(context, now_ns);
+  if (!context.pending_count) { context.batch_deadline_ns = 0; return false; }
+  if (force || (context.batch_deadline_ns && now_ns >= context.batch_deadline_ns)) {
+    flush_callback_batch(&context);
+    return false;
+  }
+  if (!context.batch_deadline_ns) context.batch_deadline_ns = now_ns + 1000000;
+  return true;
+}
+
+inline bool service_callback_batch(void* opaque, bool force) {
+  auto& context = *static_cast<CaptureContext*>(opaque);
+  if (!context.pending_callbacks && !context.pending_count) return false;
+  return service_callback_batch_at(context, force, steady_now_ns());
+}
+
 inline long UPV_CB packet_callback(void* opaque, unsigned long seconds,
                             unsigned long nanoseconds, const void* data,
                             unsigned long length, long status) {
   auto* context = static_cast<CaptureContext*>(opaque);
-  context->counters.callbacks.fetch_add(1, std::memory_order_relaxed);
-  if (context->native_batching) context->batch_has_callbacks = true;
-  else context->counters.last_callback_ns.store(steady_now_ns(), std::memory_order_relaxed);
+  if (context->native_batching) ++context->pending_callbacks;
+  else {
+    context->counters.callbacks.fetch_add(1, std::memory_order_relaxed);
+    context->counters.last_callback_ns.store(steady_now_ns(), std::memory_order_relaxed);
+  }
   if (!context->accepting.load(std::memory_order_acquire)) {
     context->counters.flushed.fetch_add(1, std::memory_order_relaxed);
     return 0;

@@ -25,6 +25,9 @@ constexpr GUID interface_guid = {0x1d4b2365, 0x4749, 0x48ea,
     {0xb3, 0x8a, 0x7c, 0x6f, 0xdd, 0xdd, 0x7e, 0x26}};
 constexpr UCHAR input_pipe = 0x81;
 constexpr UCHAR output_pipe = 0x01;
+constexpr std::size_t capture_read_bytes = 65536;
+constexpr std::size_t capture_read_count = 8;
+static_assert(capture_read_bytes * capture_read_count == 512 * 1024);
 thread_local std::string last_error;
 thread_local std::string device_list;
 
@@ -71,6 +74,7 @@ struct Device {
   int monitor_speed = 0;
   std::string serial;
   std::thread worker;
+  BatchService batch_service = nullptr;
   std::atomic<bool> stop{false};
   std::atomic<bool> broken{false};
   std::mutex mutex;
@@ -216,13 +220,15 @@ struct Device {
     // Stable addresses for OVERLAPPED and buffers until every completion has
     // been collected. This thread alone owns all transfers and the parser.
     struct Read {
-      std::array<UCHAR, 65536> bytes{};
+      std::array<UCHAR, capture_read_bytes> bytes{};
       OVERLAPPED ov{};
       bool pending = false;
     };
-    std::array<Read, 8> reads{};
+    std::array<Read, capture_read_count> reads{};
     bool command_started = false;
     bool stop_sent = false;
+    bool ready_reported = false;
+    bool pending_batch = false;
     try {
       ULONG timeout = 0; // Pending reads survive idle buses; we poll events.
       check(WinUsb_SetPipePolicy(usb, input_pipe, PIPE_TRANSFER_TIMEOUT,
@@ -256,11 +262,14 @@ struct Device {
         }
         if (!parser.started() && Clock::now() > start_deadline)
           throw std::runtime_error("timed out waiting for capture start marker");
-        if (Clock::now() > stop_deadline)
+        if (stop_sent && Clock::now() > stop_deadline)
           throw std::runtime_error("timed out waiting for capture stop marker");
         auto& read = reads[index];
-        const DWORD result = WaitForSingleObject(read.ov.hEvent, 20);
-        if (result == WAIT_TIMEOUT) continue;
+        const DWORD result = WaitForSingleObject(read.ov.hEvent, pending_batch ? 1 : 20);
+        if (result == WAIT_TIMEOUT) {
+          if (batch_service && pending_batch) pending_batch = batch_service(context, true);
+          continue;
+        }
         if (result != WAIT_OBJECT_0) throw std::runtime_error(windows_error("wait for capture read"));
         ULONG n = 0;
         const BOOL ok = WinUsb_GetOverlappedResult(usb, &read.ov, &n, FALSE);
@@ -268,11 +277,14 @@ struct Device {
         check(ok, "complete capture read");
         const bool parsed = parser.feed(read.bytes.data(), n, wall_ns());
         if (batch_end) batch_end(context);
+        if (batch_service) pending_batch = batch_service(context, !parsed || parser.stopped());
         if (!parsed)
           throw std::runtime_error(parser.error());
-        if (parser.started()) {
+        if (!ready_reported && parser.started()) {
           std::lock_guard<std::mutex> lock(mutex);
-          if (!started) { started = true; ready.notify_all(); }
+          started = true;
+          ready_reported = true;
+          ready.notify_all();
         }
         if (parser.stopped()) {
           if (!stop_sent) throw std::runtime_error("device stopped capture unexpectedly");
@@ -292,6 +304,11 @@ struct Device {
       try { batch_end(context); }
       catch (const std::exception& ex) { fail(ex.what()); }
       catch (...) { fail("unexpected native batch flush exception"); }
+    }
+    if (batch_service) {
+      try { batch_service(context, true); }
+      catch (const std::exception& ex) { fail(ex.what()); }
+      catch (...) { fail("unexpected native batch service exception"); }
     }
     if (command_started && !stop_sent) {
       try { const auto cmd = register_command(1, 0); write(cmd.data(), 4); }
@@ -335,7 +352,8 @@ UPV_HANDLE UPV_CALL open_device(const char* options, int size, void* context,
 }
 
 UPV_HANDLE open_device_batched(const char* options, int size, void* context,
-                                pfn_packet_handler callback, BatchEnd batch_end) {
+                                pfn_packet_handler callback, BatchEnd batch_end,
+                                BatchService batch_service) {
   last_error.clear();
   try {
     if (!options || size <= 0 || !callback) throw std::runtime_error("invalid native capture options");
@@ -348,6 +366,7 @@ UPV_HANDLE open_device_batched(const char* options, int size, void* context,
       device->connect(path);
       if (device->serial != serial) continue;
       device->configure(reinterpret_cast<const unsigned char*>(end + 1));
+      device->batch_service = batch_service;
       device->worker = std::thread(&Device::capture, device.get(), context, callback, batch_end);
       std::unique_lock<std::mutex> lock(device->mutex);
       const bool ready = device->ready.wait_for(lock, std::chrono::seconds(4), [&] {

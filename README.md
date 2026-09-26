@@ -78,8 +78,9 @@ errors fail the capture explicitly. See the [bottleneck investigation and
 validation](docs/reports/2026-09-26/capture-bottleneck.md).
 
 The native reader also batches queue insertion and packet counters in groups
-of up to 256 packets, reducing synchronization and clock-read overhead.
-See [CPU optimization measurements](docs/reports/2026-09-26/cpu-optimization.md).
+of up to 256 packets across USB transfers, with a 1 ms publication target,
+reducing synchronization and clock-read overhead. See the latest
+[CPU optimization measurements](docs/reports/2026-09-27/cpu-optimization.md).
 
 The [TODO](TODO.md) tracks remaining hardware soak tests and capture fixtures.
 See the [diagnostic evidence index](diagnostics/README.md) and

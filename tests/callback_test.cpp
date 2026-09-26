@@ -62,12 +62,65 @@ void legacy_immediate() {
   context.accepting = true;
   const unsigned char packet[] = {0x5a};
   usbpv::packet_callback(&context, 0, 7, packet, 1, UPV_SPD_HIGH);
-  require(context.counters.data_packets == 1 && context.pending_count == 0, "legacy callback delayed");
+  require(context.counters.data_packets == 1 && context.counters.callbacks == 1 &&
+          context.pending_count == 0 && context.pending_callbacks == 0, "legacy callback delayed");
   std::vector<usbpv::PacketSlot> output;
   require(context.queue.pop_batch(output, 3) == 1 && output[0].nanoseconds == 7, "legacy callback changed");
 }
+void callbacks_without_packets() {
+  usbpv::CaptureContext context(3, UPV_Cap_Speed_High);
+  context.native_batching = true;
+  for (unsigned i = 0; i < 1000; ++i)
+    usbpv::packet_callback(&context, 0, 0, nullptr, 0, UPV_SPD_HIGH);
+  require(context.counters.callbacks == 0 && context.pending_callbacks == 1000, "native count was not batched");
+  usbpv::flush_callback_batch(&context);
+  require(context.counters.callbacks == 1000 && context.counters.flushed == 1000 &&
+          context.pending_callbacks == 0 && context.pending_count == 0, "empty startup batch count lost");
+  context.accepting = true;
+  usbpv::packet_callback(&context, 0, 0, nullptr, 0, UPV_SPD_HIGH);
+  usbpv::flush_callback_batch(&context);
+  usbpv::flush_callback_batch(&context);
+  require(context.counters.callbacks == 1001 && context.counters.invalid_dropped == 1 &&
+          context.counters.data_packets == 0, "invalid-only batch count lost or duplicated");
+}
+void timed_publication() {
+  usbpv::CaptureContext context(1024, UPV_Cap_Speed_High);
+  context.native_batching = true; context.accepting = true;
+  const unsigned char packet[] = {0x5a};
+  auto data = [&](unsigned sequence) {
+    usbpv::packet_callback(&context, 0, sequence, packet, 1, UPV_SPD_HIGH);
+  };
+  data(1);
+  require(usbpv::service_callback_batch_at(context, false, 10000000), "first partial batch not pending");
+  require(context.counters.callbacks == 1 && context.counters.last_callback_ns == 10000000 &&
+          context.counters.data_packets == 0 && context.batch_deadline_ns == 11000000, "deferred activity/deadline");
+  data(2);
+  require(usbpv::service_callback_batch_at(context, false, 10999999), "batch published before deadline");
+  require(context.batch_deadline_ns == 11000000 && context.counters.callbacks == 2,
+          "active traffic must not postpone deadline");
+  require(!usbpv::service_callback_batch_at(context, false, 11000000), "deadline did not publish");
+  require(context.counters.data_packets == 2 && context.batch_deadline_ns == 0 &&
+          context.counters.last_callback_ns == 10999999, "timer publication changed activity time");
+  data(3);
+  require(usbpv::service_callback_batch_at(context, false, 12000000), "new partial batch");
+  context.accepting = false;
+  require(!usbpv::service_callback_batch_at(context, true, 12000001), "forced stop/idle publication");
+  require(context.counters.data_packets == 3 && context.counters.callbacks == 3 &&
+          context.counters.last_callback_ns == 12000000, "forced publication accounting");
+  require(!usbpv::service_callback_batch_at(context, true, 13000000), "empty forced publication");
+  context.accepting = true;
+  data(4);
+  require(usbpv::service_callback_batch_at(context, false, 14000000), "full batch initial tail");
+  for (unsigned i = 5; i < 260; ++i) data(i);
+  require(context.pending_count == 0 && context.batch_deadline_ns == 0 &&
+          context.counters.data_packets == 259, "full batch must publish before timer");
+  context.queue.stop();
+  std::vector<usbpv::PacketSlot> output;
+  require(context.queue.pop_batch(output, 1024) == 259, "timed publication lost records");
+  for (unsigned i = 0; i < 259; ++i) require(output[i].nanoseconds == i + 1, "timed publication reordered records");
+}
 }  // namespace
 int main() {
-  native_batches(); errors_and_full_queue(); legacy_immediate();
+  native_batches(); errors_and_full_queue(); legacy_immediate(); callbacks_without_packets(); timed_publication();
   std::cout << "callback tests passed (partial batches, stop, counters, errors, legacy)\n";
 }

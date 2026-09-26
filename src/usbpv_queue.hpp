@@ -34,7 +34,7 @@ class PacketQueue {
     slot.status = status;
     slot.length = static_cast<std::uint16_t>(length);
     if (length) std::memcpy(slot.data.data(), data, length);
-    head_ = (head_ + 1) % slots_.size();
+    if (++head_ == slots_.size()) head_ = 0;
     ++count_;
     lock.unlock();
     if (notify) cv_.notify_one();
@@ -56,7 +56,7 @@ class PacketQueue {
       target.status = source.status;
       target.length = source.length;
       if (source.length) std::memcpy(target.data.data(), source.data.data(), source.length);
-      head_ = (head_ + 1) % slots_.size();
+      if (++head_ == slots_.size()) head_ = 0;
     }
     count_ += amount;
     lock.unlock();
@@ -79,7 +79,7 @@ class PacketQueue {
       target.status = source.status;
       target.length = source.length;
       if (source.length) std::memcpy(target.data.data(), source.data.data(), source.length);
-      tail_ = (tail_ + 1) % slots_.size();
+      if (++tail_ == slots_.size()) tail_ = 0;
     }
     count_ -= amount;
     return amount;

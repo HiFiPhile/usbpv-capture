@@ -102,11 +102,50 @@ void malformed() {
     require(!parser.feed(wire.data(), wire.size(), 0), "malformed stream accepted");
     require(!parser.error().empty() && packets.empty(), "malformed diagnostics");
     require(!parser.feed(wire.data(), 0, 0), "error is sticky");
+    for (std::size_t split = 0; split <= wire.size(); ++split) {
+      std::vector<Packet> fragmented;
+      usbpv::ProtocolParser other(&fragmented, receive);
+      const bool first = other.feed(wire.data(), split, 0);
+      const bool second = other.feed(wire.data() + split, wire.size() - split, 0);
+      require(!second && (!first || !other.error().empty()), "split malformed record accepted");
+      require(other.error() == parser.error() && fragmented.empty(), "fragmentation changed error");
+    }
   }
   std::vector<Packet> packets;
   usbpv::ProtocolParser parser(&packets, receive);
   std::vector<std::uint8_t> garbage(1048577, 0);
   require(!parser.feed(garbage.data(), garbage.size(), 0), "bounded start search");
+}
+void all_lengths_and_flags() {
+  // Unaligned source, all valid lengths, every speed/error-flag combination,
+  // ignored high length bits, and opaque padding. Exercise direct records and
+  // records split repeatedly through their header, payload, and padding.
+  std::vector<std::uint8_t> wire{0xee, 0x55, 1, 1, 0x57};
+  for (unsigned length = 1; length <= 1050; ++length) {
+    const auto begin = wire.size();
+    append_packet(wire, static_cast<std::uint8_t>(0x60 | (length % 16)),
+                  100 + (length - 1) * 7500, length);
+    wire[begin + 5] |= 0xc0;
+  }
+  wire.insert(wire.end(), {0x55, 1, 0, 0x56});
+  for (std::size_t chunk : {std::size_t(16), std::size_t(257), wire.size()}) {
+    std::vector<Packet> packets;
+    usbpv::ProtocolParser parser(&packets, receive);
+    for (std::size_t pos = 1; pos < wire.size(); pos += chunk)
+      require(parser.feed(wire.data() + pos, std::min(chunk, wire.size() - pos), 1000000000ULL),
+              "all-length stream rejected");
+    require(parser.stopped() && packets.size() == 1050, "all-length record count");
+    const long speeds[] = {UPV_SPD_HIGH, UPV_SPD_FULL, UPV_SPD_LOW, UPV_SPD_Unknown};
+    for (std::size_t i = 0; i < packets.size(); ++i) {
+      const auto length = i + 1;
+      require(packets[i].bytes.size() == length, "length/high bits changed");
+      require(packets[i].ns == 1000000000ULL + i * 125000, "direct/split timestamp changed");
+      require(packets[i].status == (speeds[length % 4] | static_cast<long>(((length % 16) / 4) * 256)),
+              "direct/split status changed");
+      for (std::size_t j = 0; j < length; ++j)
+        require(packets[i].bytes[j] == static_cast<std::uint8_t>(j), "direct/split payload changed");
+    }
+  }
 }
 void commands() {
   require(usbpv::register_command(1, 1) == std::array<std::uint8_t, 4>{0x55, 1, 1, 0x57}, "start command");
@@ -124,6 +163,6 @@ void commands() {
 }
 }  // namespace
 int main() {
-  framing(); timestamps_and_flags(); malformed(); commands();
+  framing(); timestamps_and_flags(); malformed(); all_lengths_and_flags(); commands();
   std::cout << "protocol tests passed\n";
 }

@@ -29,8 +29,8 @@ under `diagnostics/artifacts/2026-09-26/vendor-crash/` (ignored because dumps co
 
 ## Ownership and error handling
 
-One native reader thread owns an eight-entry ring of 64 KiB WinUSB reads and
-the stream parser. Callbacks copy complete packets into the existing locked,
+One native reader thread owns an eight-entry ring of 64 KiB WinUSB reads (512 KiB
+total transport reserve) and the stream parser. Callbacks copy complete packets into the existing locked,
 bounded writer queue. There is no vendor producer/consumer list or vendor
 capture thread in this path. The device handle is opened exclusively.
 
@@ -40,7 +40,10 @@ read before freeing buffers or handles. Cancellation alone does not release
 buffer ownership; see Microsoft's [CancelIoEx contract](https://learn.microsoft.com/en-us/windows/win32/api/ioapiset/nf-ioapiset-cancelioex).
 Register and output-pipe transfers have one-second timeouts. Idle stream reads
 remain pending and are polled every 20 ms so idle buses do not lose partial
-transfers to periodic read timeouts.
+transfers to periodic read timeouts. While a partial callback batch is pending,
+the reader uses a 1 ms wait and publishes that batch on timeout. Complete
+records are decoded directly from read buffers; split records use the parser's
+fragment buffer. Callback payloads are copied before those read buffers are reused.
 
 Malformed records/checksums, transport failures, missing start/stop markers,
 hardware error flags, device overflow, and writer-queue loss cannot produce

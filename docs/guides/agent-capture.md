@@ -63,6 +63,8 @@ Every stdout line is one JSON object. The final object is also written to
 to `captures/run.pcapng.events.jsonl`. Diagnostics go to stderr.
 
 Packet processing encodes pcapng into a fixed pool of 32 one-MiB buffers.
+See the [data-flow diagram](../reference/capture-data-flow.md) for all buffer
+sizes and thread boundaries.
 A separate worker writes those buffers to disk; bus-event JSONL has its own
 256 KiB pool and worker. Periodic flush requests are asynchronous and ordered.
 Shutdown drains pending output and checks final flush/close errors before
@@ -78,11 +80,13 @@ outstanding file I/O.
 
 The native reader stages up to 256 validated packets (about 516 KiB) before
 inserting them into the bounded packet queue with one lock operation. A
-partial batch is published at the end of every USB transfer and on reader
-exit, so idle/stop handling does not depend on filling a batch. Successful
-packet counters and host-side activity time are updated when publishing;
-captured USB timestamps are unchanged. The legacy callback path continues
-to publish each packet immediately.
+partial batch can span USB transfers, with a 1 ms publication target. A full
+batch publishes immediately; idle waits, stop, and reader errors flush the
+tail. Windows scheduling can delay publication beyond this target. Total
+callback count and host-side activity time update at each transfer; successful
+packet counters update when publishing. Captured USB timestamps are unchanged.
+The legacy callback path continues to publish each packet immediately. See
+the [CPU follow-up measurements](../reports/2026-09-27/cpu-optimization.md).
 
 The default packet mask is `0xEB`: ACK, ISO, STALL, PING, incomplete, and
 error packets are enabled; SOF and NAK are disabled. Use `--include-sof` when

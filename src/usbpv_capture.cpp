@@ -480,6 +480,7 @@ using usbpv::Counters;
 using usbpv::CaptureContext;
 using usbpv::steady_now_ns;
 using usbpv::flush_callback_batch;
+using usbpv::service_callback_batch;
 using usbpv::packet_callback;
 
 void put_u16(std::ostream& out, std::uint16_t value) {
@@ -864,7 +865,7 @@ int run_capture(int argc, char** argv) {
   if (config.library.empty()) {
     context.native_batching = true;
     device = usbpv::native::open_device_batched(options.data(), static_cast<int>(options.size()),
-                                               &context, packet_callback, flush_callback_batch);
+                                               &context, packet_callback, nullptr, service_callback_batch);
   } else
 #endif
   device = api.open_device(options.data(), static_cast<int>(options.size()),

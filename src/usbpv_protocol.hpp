@@ -26,6 +26,7 @@ class ProtocolParser {
 
  private:
   bool fail(const std::string& error);
+  void emit_data(const std::uint8_t* record, std::size_t length, std::uint64_t host_ns);
   void emit(std::uint32_t ticks, const void* data, std::size_t size,
             long status, std::uint64_t host_ns);
   void* context_;

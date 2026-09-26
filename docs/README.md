@@ -12,6 +12,8 @@ unless stated otherwise.
 
 ## Reference
 
+- [Capture data flow and buffers](reference/capture-data-flow.md): thread
+  boundaries, buffer capacities, payload copies, and output ownership.
 - [Native CH56x protocol](reference/native-protocol.md): WinUSB transport,
   register commands, stream framing, timestamps, crash diagnosis, and validation.
 - [Vendor API](reference/vendor-api.md): original vendor API documentation.
@@ -28,6 +30,11 @@ they are not maximum-throughput guarantees.
 | [Output bottleneck](reports/2026-09-26/capture-bottleneck.md) | A 61 ms synchronous write stalled queue draining; bounded asynchronous output handled injected 151–161 ms stalls. |
 | [CPU profile](reports/2026-09-26/cpu-profile.md) | Reading, parsing, and queue insertion dominated CPU after output buffering. |
 | [CPU optimization](reports/2026-09-26/cpu-optimization.md) | Native callback batching reduced measured CPU by 23–33% in the recorded comparisons. |
+
+## Follow-up — 2026-09-27
+
+- [CPU optimization across USB transfers](reports/2026-09-27/cpu-optimization.md):
+  bounded callback coalescing, direct record decoding, and measured transport experiments.
 
 See the [diagnostic evidence index](../diagnostics/README.md) for local captures,
 dumps, logs, and their relocation manifest. The [diagnostic tools guide](../tools/diagnostics/README.md)

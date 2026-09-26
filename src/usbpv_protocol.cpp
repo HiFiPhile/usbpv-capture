@@ -56,6 +56,14 @@ void ProtocolParser::emit(std::uint32_t ticks, const void* data, std::size_t siz
             static_cast<unsigned long>(size), status);
 }
 
+void ProtocolParser::emit_data(const std::uint8_t* record, std::size_t length,
+                              std::uint64_t host_ns) {
+  const auto tag = record[0];
+  const auto ticks = record[1] | (record[2] << 8) | (record[3] << 16);
+  const long speed[] = {UPV_SPD_HIGH, UPV_SPD_FULL, UPV_SPD_LOW, UPV_SPD_Unknown};
+  emit(ticks, record + 6, length, speed[tag & 3] | ((tag << 6) & 0x300), host_ns);
+}
+
 bool ProtocolParser::feed(const std::uint8_t* data, std::size_t size,
                           std::uint64_t host_ns) {
   if (!error_.empty()) return false;
@@ -66,6 +74,21 @@ bool ProtocolParser::feed(const std::uint8_t* data, std::size_t size,
       if (++startup_bytes_ > 1048576) return fail("capture start marker missing");
       if (marker_ == 0x55010157) started_ = true;
       continue;
+    }
+    // Most data records fit in the current USB transfer. Decode those directly
+    // without the fragment buffer's three incremental copy operations.
+    // The callback consumes/copies payload before feed returns. Split records,
+    // commands, and bus events keep using the existing incremental decoder.
+    if (!used_ && size >= 6 && (data[0] & 0xf0) == 0x60) {
+      const std::size_t length = (data[4] | (data[5] << 8)) & 0x3fff;
+      if (!length || length > 1050) return fail("invalid stream packet length");
+      const std::size_t total = (6 + length + 3) & ~std::size_t(3);
+      if (size >= total) {
+        emit_data(data, length, host_ns);
+        data += total;
+        size -= total;
+        continue;
+      }
     }
     const std::size_t count = std::min(size, needed_ - used_);
     std::memcpy(record_.data() + used_, data, count);
@@ -89,10 +112,7 @@ bool ProtocolParser::feed(const std::uint8_t* data, std::size_t size,
         needed_ = (6 + length + 3) & ~std::size_t(3);
         continue;
       }
-      const auto ticks = record_[1] | (record_[2] << 8) | (record_[3] << 16);
-      const long speed[] = {UPV_SPD_HIGH, UPV_SPD_FULL, UPV_SPD_LOW, UPV_SPD_Unknown};
-      emit(ticks, record_.data() + 6, length,
-           speed[tag & 3] | ((tag << 6) & 0x300), host_ns);
+      emit_data(record_.data(), length, host_ns);
     } else if (tag == 0x55) {
       if (static_cast<std::uint8_t>(tag + record_[1] + record_[2]) != record_[3])
         return fail("invalid stream command checksum");
