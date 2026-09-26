@@ -11,21 +11,25 @@ Wireshark/TShark-readable pcapng plus machine-readable JSON status files.
 On Windows, CH56x sniffers use a native WinUSB protocol implementation by
 default. This removes the vendor DLL's capture-queue race that caused access
 violations during ISO captures. No vendor DLL is loaded for native capture.
-See [protocol and crash diagnosis](docs/native-protocol.md).
+See [protocol and crash diagnosis](docs/reference/native-protocol.md).
 
 ## Repository layout
 
 ```text
 include/       Public vendor API header
 src/           Agent capture implementation
-docs/          Operation guide and vendor documentation
+docs/          Indexed guides, reference, and dated investigation reports
 examples/      Original C++, Python, C#, Qt, and Visual Studio samples
 tools/         Runtime preparation utilities
 vendor/        Windows x86/x64 and Linux x64 vendor runtimes
 captures/      Local captures (ignored by Git)
+diagnostics/   Evidence index and ignored dated diagnostic archives
 ```
 
 ## Build
+
+Start with the [documentation index](docs/README.md) for operating guides,
+protocol reference, and investigation reports.
 
 Windows with Visual Studio or MinGW:
 
@@ -53,7 +57,7 @@ and defaults to `OFF` on Windows. The Linux vendor
 library is x86-64 and depends on `libudev.so.1`, `libstdc++.so.6`,
 `libgcc_s.so.1`, and `libc.so.6`.
 
-Run parser regression tests with `ctest --test-dir build --output-on-failure`
+Run parser, output, queue, and callback tests with `ctest --test-dir build --output-on-failure`
 (add `-C Release` for Visual Studio builds).
 
 ## Capture
@@ -65,10 +69,22 @@ Run parser regression tests with `ctest --test-dir build --output-on-failure`
 ```
 
 On multi-configuration Windows builds the executable may be under
-`build/Release`. See [the agent workflow guide](docs/agent-capture.md) for
+`build/Release`. See [the agent workflow guide](docs/guides/agent-capture.md) for
 ready/stop-file coordination, filters, output schema, and NAK safety.
 
+Pcapng output uses a fixed 32 MiB buffer pool and a separate file writer so
+short disk stalls do not block packet processing. Buffer exhaustion or output
+errors fail the capture explicitly. See the [bottleneck investigation and
+validation](docs/reports/2026-09-26/capture-bottleneck.md).
+
+The native reader also batches queue insertion and packet counters in groups
+of up to 256 packets, reducing synchronization and clock-read overhead.
+See [CPU optimization measurements](docs/reports/2026-09-26/cpu-optimization.md).
+
 The [TODO](TODO.md) tracks remaining hardware soak tests and capture fixtures.
+See the [diagnostic evidence index](diagnostics/README.md) and
+[reusable profiling tools](tools/diagnostics/README.md) for saved investigations
+and new workload measurements.
 The binary SDK components are vendor-provided; no upstream license file was
 included in the supplied SDK, so verify redistribution terms before publishing
 this repository.

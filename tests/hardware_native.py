@@ -47,7 +47,10 @@ def main():
                          "--accept", "127:15")
     if summary["reason"] != "idle_timeout" or summary["packets"]:
         raise RuntimeError(f"idle/filter failed: {summary}")
-    capture("packet-stop", "--duration", 3, "--max-packets", 100)
+    _, summary = capture("packet-stop", "--duration", 3, "--max-packets", 100,
+                         "--include-sof")
+    if summary["reason"] != "max_packets" or summary["packets"] < 100:
+        raise RuntimeError(f"packet-count stop failed: {summary}")
     # File-open failure happens after capture startup; the next capture must
     # still work, proving that this early-exit path closed the reader.
     command = [str(args.exe.resolve()), "capture", "--speed", "high", "--duration", "1",

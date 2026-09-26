@@ -19,8 +19,8 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): src/usbpv_capture.cpp include/usbpv_lib.h $(NATIVE_SOURCES) $(NATIVE_HEADER) src/usbpv_protocol.hpp src/usbpv_native.hpp
-	$(CXX) $(CXXFLAGS) $(NATIVE_CPPFLAGS) -Iinclude -o $@ src/usbpv_capture.cpp $(NATIVE_SOURCES) $(LDLIBS)
+$(TARGET): src/usbpv_capture.cpp src/usbpv_output.cpp src/usbpv_output.hpp src/usbpv_queue.hpp src/usbpv_capture_queue.hpp include/usbpv_lib.h $(NATIVE_SOURCES) $(NATIVE_HEADER) src/usbpv_protocol.hpp src/usbpv_native.hpp
+	$(CXX) $(CXXFLAGS) $(NATIVE_CPPFLAGS) -Iinclude -o $@ src/usbpv_capture.cpp src/usbpv_output.cpp $(NATIVE_SOURCES) $(LDLIBS)
 
 build-make/usbpv_fpga.hpp: tools/embed-fpga.cmake vendor/linux-x64/libusbpv_lib.so
 	cmake -E make_directory build-make

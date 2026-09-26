@@ -1,4 +1,6 @@
 #include "usbpv_lib.h"
+#include "usbpv_output.hpp"
+#include "usbpv_capture_queue.hpp"
 
 #include <algorithm>
 #include <array>
@@ -37,7 +39,7 @@
 
 namespace {
 
-constexpr std::size_t kMaxPacketBytes = 2048;
+constexpr std::size_t kMaxPacketBytes = usbpv::kMaxPacketBytes;
 constexpr std::size_t kDefaultQueueCapacity = 16384;
 constexpr std::uint8_t kDefaultFlags = static_cast<std::uint8_t>(
     UPV_FLAG_ALL & ~(UPV_FLAG_SOF | UPV_FLAG_NAK));
@@ -471,141 +473,14 @@ bool parse_capture_args(int argc, char** argv, Config& config, std::string& erro
   return true;
 }
 
-struct PacketSlot {
-  std::uint32_t seconds = 0;
-  std::uint32_t nanoseconds = 0;
-  std::int32_t status = 0;
-  std::uint16_t length = 0;
-  std::array<std::uint8_t, kMaxPacketBytes> data{};
-};
+using usbpv::PacketSlot;
+using usbpv::PacketQueue;
 
-class PacketQueue {
- public:
-  explicit PacketQueue(std::size_t capacity) : slots_(capacity) {}
-
-  bool push(std::uint32_t seconds, std::uint32_t nanoseconds,
-            const void* data, std::size_t length, std::int32_t status) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    if (stopped_ || count_ == slots_.size()) return false;
-    PacketSlot& slot = slots_[head_];
-    slot.seconds = seconds;
-    slot.nanoseconds = nanoseconds;
-    slot.status = status;
-    slot.length = static_cast<std::uint16_t>(length);
-    if (length) std::memcpy(slot.data.data(), data, length);
-    head_ = (head_ + 1) % slots_.size();
-    ++count_;
-    cv_.notify_one();
-    return true;
-  }
-
-  std::size_t pop_batch(std::vector<PacketSlot>& batch, std::size_t maximum) {
-    std::unique_lock<std::mutex> lock(mutex_);
-    cv_.wait_for(lock, std::chrono::milliseconds(100),
-                 [&] { return count_ != 0 || stopped_; });
-    batch.clear();
-    const std::size_t amount = std::min(count_, maximum);
-    for (std::size_t i = 0; i < amount; ++i) {
-      batch.push_back(slots_[tail_]);
-      tail_ = (tail_ + 1) % slots_.size();
-    }
-    count_ -= amount;
-    return amount;
-  }
-
-  void stop() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    stopped_ = true;
-    cv_.notify_all();
-  }
-
-  bool drained() const {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return stopped_ && count_ == 0;
-  }
-
- private:
-  std::vector<PacketSlot> slots_;
-  mutable std::mutex mutex_;
-  std::condition_variable cv_;
-  std::size_t head_ = 0;
-  std::size_t tail_ = 0;
-  std::size_t count_ = 0;
-  bool stopped_ = false;
-};
-
-struct Counters {
-  std::atomic<std::uint64_t> callbacks{0};
-  std::atomic<std::uint64_t> flushed{0};
-  std::atomic<std::uint64_t> data_packets{0};
-  std::atomic<std::uint64_t> data_bytes{0};
-  std::atomic<std::uint64_t> bus_events{0};
-  std::atomic<std::uint64_t> device_overflows{0};
-  std::atomic<std::uint64_t> queue_dropped{0};
-  std::atomic<std::uint64_t> invalid_dropped{0};
-  std::atomic<std::uint64_t> speed_mismatches{0};
-  std::atomic<std::int64_t> last_callback_ns{0};
-};
-
-std::int64_t steady_now_ns() {
-  return std::chrono::duration_cast<std::chrono::nanoseconds>(
-             std::chrono::steady_clock::now().time_since_epoch())
-      .count();
-}
-
-struct CaptureContext {
-  explicit CaptureContext(std::size_t capacity, UPV_CaptureSpeed selected_speed)
-      : queue(capacity), expected_packet_speed(selected_speed == UPV_Cap_Speed_High ? UPV_SPD_HIGH
-                                      : selected_speed == UPV_Cap_Speed_Full ? UPV_SPD_FULL
-                                                                            : UPV_SPD_LOW) {}
-  PacketQueue queue;
-  Counters counters;
-  const int expected_packet_speed;
-  std::atomic<bool> accepting{false};
-};
-
-long UPV_CB packet_callback(void* opaque, unsigned long seconds,
-                            unsigned long nanoseconds, const void* data,
-                            unsigned long length, long status) {
-  auto* context = static_cast<CaptureContext*>(opaque);
-  context->counters.callbacks.fetch_add(1, std::memory_order_relaxed);
-  context->counters.last_callback_ns.store(steady_now_ns(), std::memory_order_relaxed);
-  if (!context->accepting.load(std::memory_order_acquire)) {
-    context->counters.flushed.fetch_add(1, std::memory_order_relaxed);
-    return 0;
-  }
-  const int type = GetPacketType(status);
-  if (type == UPV_DATA_PACKET) {
-    if ((!data && length != 0) || length == 0 || length > kMaxPacketBytes ||
-        (status & 0xf00)) {
-      context->counters.invalid_dropped.fetch_add(1, std::memory_order_relaxed);
-      return 0;
-    }
-    if (GetPacketSpeed(status) != context->expected_packet_speed) {
-      context->counters.speed_mismatches.fetch_add(1, std::memory_order_relaxed);
-      return 0;
-    }
-  } else if (length > kMaxPacketBytes) {
-    context->counters.invalid_dropped.fetch_add(1, std::memory_order_relaxed);
-    return 0;
-  }
-  if (!context->queue.push(static_cast<std::uint32_t>(seconds),
-                           static_cast<std::uint32_t>(nanoseconds), data,
-                           static_cast<std::size_t>(length),
-                           static_cast<std::int32_t>(status))) {
-    context->counters.queue_dropped.fetch_add(1, std::memory_order_relaxed);
-    return 0;
-  }
-  if (type == UPV_DATA_PACKET) {
-    context->counters.data_packets.fetch_add(1, std::memory_order_relaxed);
-    context->counters.data_bytes.fetch_add(length, std::memory_order_relaxed);
-  } else {
-    context->counters.bus_events.fetch_add(1, std::memory_order_relaxed);
-    if (type == UPV_OVERFLOW)
-      context->counters.device_overflows.fetch_add(1, std::memory_order_relaxed);
-  }
-  return 0;
-}
+using usbpv::Counters;
+using usbpv::CaptureContext;
+using usbpv::steady_now_ns;
+using usbpv::flush_callback_batch;
+using usbpv::packet_callback;
 
 void put_u16(std::ostream& out, std::uint16_t value) {
   const std::array<char, 2> bytes{{static_cast<char>(value & 0xff),
@@ -654,38 +529,39 @@ class PcapngWriter {
     }
     write_section_header();
     write_interface(link_type, description);
+    file_.flush();
     if (!file_) {
       error = "cannot write pcapng headers to " + path;
+      return false;
+    }
+    if (!output_.start(
+            [this](const char* bytes, std::size_t size) {
+              file_.write(bytes, static_cast<std::streamsize>(size));
+              return static_cast<bool>(file_);
+            },
+            [this] { file_.flush(); return static_cast<bool>(file_); })) {
+      error = output_.error();
       return false;
     }
     return true;
   }
 
   bool write_packet(const PacketSlot& packet) {
-    const std::uint32_t payload_padded = padded_length(packet.length);
-    const std::uint32_t total = 32U + payload_padded;
-    const std::uint64_t timestamp = static_cast<std::uint64_t>(packet.seconds) *
-                                        1000000000ULL +
-                                    packet.nanoseconds;
-    put_u32(file_, 0x00000006U);
-    put_u32(file_, total);
-    put_u32(file_, 0);
-    put_u32(file_, static_cast<std::uint32_t>(timestamp >> 32));
-    put_u32(file_, static_cast<std::uint32_t>(timestamp & 0xffffffffULL));
-    put_u32(file_, packet.length);
-    put_u32(file_, packet.length);
-    if (packet.length)
-      file_.write(reinterpret_cast<const char*>(packet.data.data()), packet.length);
-    static const char zeros[4] = {};
-    if (payload_padded != packet.length)
-      file_.write(zeros, payload_padded - packet.length);
-    put_u32(file_, total);
-    return static_cast<bool>(file_);
+    char* record = output_.reserve(usbpv::packet_block_size(packet.length));
+    if (!record) return false;
+    usbpv::encode_packet_block(record, packet.seconds, packet.nanoseconds,
+                               packet.data.data(), packet.length);
+    return true;
   }
 
-  bool flush() {
-    file_.flush();
-    return static_cast<bool>(file_);
+  bool flush() { return output_.flush(); }
+  bool failed() const { return output_.failed(); }
+  std::string error() const { return output_.error(); }
+  std::uint64_t peak_pending_bytes() const { return output_.peak_pending_bytes(); }
+  bool finish() {
+    const bool ok = output_.finish();
+    if (file_.is_open()) file_.close();
+    return ok && static_cast<bool>(file_);
   }
 
  private:
@@ -727,6 +603,8 @@ class PcapngWriter {
   }
 
   std::ofstream file_;
+  // Destroy/join output before destroying the stream captured by its callbacks.
+  usbpv::BufferedOutput output_;
 };
 
 const char* event_name(int type) {
@@ -765,49 +643,70 @@ void set_writer_error(WriterState& state, const std::string& error) {
 
 void writer_thread(CaptureContext& context, PcapngWriter& pcap,
                    std::ofstream& events, WriterState& state) {
-  std::vector<PacketSlot> batch;
-  batch.reserve(256);
+  usbpv::BufferedOutput event_output(64 * 1024, 4);
+  if (!event_output.start(
+          [&](const char* bytes, std::size_t size) {
+            events.write(bytes, static_cast<std::streamsize>(size));
+            return static_cast<bool>(events);
+          }, [&] { events.flush(); return static_cast<bool>(events); })) {
+    set_writer_error(state, "event output: " + event_output.error());
+    pcap.finish();
+    return;
+  }
+  std::vector<PacketSlot> batch(256);
   auto last_flush = std::chrono::steady_clock::now();
   while (true) {
-    context.queue.pop_batch(batch, 256);
-    for (const PacketSlot& packet : batch) {
+    if (pcap.failed() || event_output.failed()) {
+      set_writer_error(state, pcap.failed() ? "pcapng: " + pcap.error()
+                                           : "events: " + event_output.error());
+      break;
+    }
+    const std::size_t amount = context.queue.pop_batch(batch, batch.size());
+    for (std::size_t i = 0; i < amount; ++i) {
+      const PacketSlot& packet = batch[i];
       const int type = GetPacketType(packet.status);
       if (type == UPV_DATA_PACKET) {
         if (!pcap.write_packet(packet)) {
-          set_writer_error(state, "pcapng write failed");
-          return;
+          set_writer_error(state, "pcapng: " + pcap.error());
+          break;
         }
       } else {
-        events << "{\"event\":\"bus_event\",\"type\":\""
+        std::ostringstream line;
+        line << "{\"event\":\"bus_event\",\"type\":\""
                << event_name(type) << "\",\"type_id\":" << type
                << ",\"seconds\":" << packet.seconds
                << ",\"nanoseconds\":" << packet.nanoseconds
                << ",\"speed\":\"" << packet_speed_name(GetPacketSpeed(packet.status))
                << "\"}\n";
-        if (!events) {
-          set_writer_error(state, "event JSONL write failed");
-          return;
+        const std::string text = line.str();
+        char* output = event_output.reserve(text.size());
+        if (!output) {
+          set_writer_error(state, "events: " + event_output.error());
+          break;
         }
+        std::memcpy(output, text.data(), text.size());
       }
     }
+    if (state.failed.load(std::memory_order_acquire)) break;
     const auto now = std::chrono::steady_clock::now();
     if (now - last_flush >= std::chrono::seconds(1)) {
       if (!pcap.flush()) {
-        set_writer_error(state, "pcapng flush failed");
-        return;
+        set_writer_error(state, "pcapng: " + pcap.error());
+        break;
       }
-      events.flush();
-      if (!events) {
-        set_writer_error(state, "event JSONL flush failed");
-        return;
+      if (!event_output.flush()) {
+        set_writer_error(state, "events: " + event_output.error());
+        break;
       }
       last_flush = now;
     }
     if (context.queue.drained()) break;
   }
-  if (!pcap.flush()) set_writer_error(state, "final pcapng flush failed");
-  events.flush();
-  if (!events) set_writer_error(state, "final event JSONL flush failed");
+  if (!pcap.finish()) set_writer_error(state, "final pcapng output failed: " + pcap.error());
+  if (!event_output.finish()) set_writer_error(state, "final event output failed: " + event_output.error());
+  events.close();
+  if (!events) set_writer_error(state, "event file close failed");
+  context.counters.output_pending_peak_bytes.store(pcap.peak_pending_bytes(), std::memory_order_relaxed);
 }
 
 std::uint16_t link_type_for_speed(UPV_CaptureSpeed speed) {
@@ -866,7 +765,8 @@ std::string make_status_json(const char* event, const Config& config,
       << ",\"device_overflows\":" << c.device_overflows.load()
       << ",\"queue_dropped\":" << c.queue_dropped.load()
       << ",\"invalid_dropped\":" << c.invalid_dropped.load()
-      << ",\"speed_mismatches\":" << c.speed_mismatches.load() << "}";
+      << ",\"speed_mismatches\":" << c.speed_mismatches.load()
+      << ",\"output_pending_peak_bytes\":" << c.output_pending_peak_bytes.load() << "}";
   return out.str();
 }
 
@@ -959,7 +859,15 @@ int run_capture(int argc, char** argv) {
 
   CaptureContext context(config.queue_capacity, config.speed);
   const std::vector<char> options = make_open_options(config);
-  UPV_HANDLE device = api.open_device(options.data(), static_cast<int>(options.size()),
+  UPV_HANDLE device;
+#ifdef _WIN32
+  if (config.library.empty()) {
+    context.native_batching = true;
+    device = usbpv::native::open_device_batched(options.data(), static_cast<int>(options.size()),
+                                               &context, packet_callback, flush_callback_batch);
+  } else
+#endif
+  device = api.open_device(options.data(), static_cast<int>(options.size()),
                                       &context, packet_callback);
   if (!device) {
     return emit_error("device_open", api.last_error() +
@@ -1008,6 +916,7 @@ int run_capture(int argc, char** argv) {
         << "\",\"monitor_port\":\""
         << (monitor_speed < 0 ? "unknown" : monitor_speed == 0 ? "high" : "super")
         << "\",\"queue_capacity\":" << config.queue_capacity
+        << ",\"output_buffer_bytes\":" << usbpv::BufferedOutput::block_bytes * usbpv::BufferedOutput::block_count
         << ",\"flushed_callbacks\":" << context.counters.flushed.load() << "}";
   const std::string ready_json = ready.str();
   if (!config.ready_file.empty() && !write_text_file(config.ready_file, ready_json, error)) {

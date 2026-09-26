@@ -28,7 +28,7 @@ working; ready/summary JSON identifies this backend as `native-winusb`.
 
 Pass an absolute `--library` path only to opt into the legacy vendor engine
 (for example, for an older FTDI sniffer). That path retains the vendor's
-known capture-queue race. See [native protocol details](native-protocol.md).
+known capture-queue race. See [native protocol details](../reference/native-protocol.md).
 Linux continues to discover and use the bundled vendor library. CMake copies
 vendor runtimes by default on Linux, but not on Windows; the copy option is
 `USBPV_COPY_VENDOR_RUNTIME`.
@@ -61,6 +61,28 @@ exist. The program also accepts Ctrl+C.
 Every stdout line is one JSON object. The final object is also written to
 `captures/run.pcapng.summary.json`; reset/suspend/overflow events are written
 to `captures/run.pcapng.events.jsonl`. Diagnostics go to stderr.
+
+Packet processing encodes pcapng into a fixed pool of 32 one-MiB buffers.
+A separate worker writes those buffers to disk; bus-event JSONL has its own
+256 KiB pool and worker. Periodic flush requests are asynchronous and ordered.
+Shutdown drains pending output and checks final flush/close errors before
+reporting success. Sustained slow storage can exhaust either pool; this is an
+explicit output failure, with a nonzero exit and `complete: false`.
+
+Ready JSON includes `output_buffer_bytes` (33,554,432 for pcapng). Final summary
+JSON includes `output_pending_peak_bytes`, the maximum published pcapng bytes
+waiting for or inside a file write; it excludes the partially filled producer
+buffer. These buffers absorb temporary stalls but cannot guarantee lossless
+capture through arbitrarily long I/O delays; shutdown still waits for
+outstanding file I/O.
+
+The native reader stages up to 256 validated packets (about 516 KiB) before
+inserting them into the bounded packet queue with one lock operation. A
+partial batch is published at the end of every USB transfer and on reader
+exit, so idle/stop handling does not depend on filling a batch. Successful
+packet counters and host-side activity time are updated when publishing;
+captured USB timestamps are unchanged. The legacy callback path continues
+to publish each packet immediately.
 
 The default packet mask is `0xEB`: ACK, ISO, STALL, PING, incomplete, and
 error packets are enabled; SOF and NAK are disabled. Use `--include-sof` when

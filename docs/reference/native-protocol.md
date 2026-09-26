@@ -25,7 +25,7 @@ The original, unmodified vendor DLL/runtime bundle reproduced the same race;
 disabling SOF did not fix it. Ten unforced debugger runs passed, so the
 controlled reproduction establishes the mechanism, not natural crash frequency.
 Local full dumps, debugger source, disassembly, and the detailed report are
-under `build-diagnostics/` (ignored because dumps contain process memory).
+under `diagnostics/artifacts/2026-09-26/vendor-crash/` (ignored because dumps contain process memory).
 
 ## Ownership and error handling
 
@@ -154,16 +154,18 @@ ISO audio traffic:
 
 All successful hardware summaries reported zero device overflows, writer-queue
 drops, invalid packets, and speed mismatches. Local captures/results are in
-`build-native/soak`, `build-native/final-validation`, and
-`build-native/final-debug.*`. The diagnostic build in `build/usbpv_capture.exe`
+`diagnostics/artifacts/2026-09-26/native/soak`, `diagnostics/artifacts/2026-09-26/native/final-validation`, and
+`diagnostics/artifacts/2026-09-26/native/final-debug.*`. The diagnostic build in `build/usbpv_capture.exe`
 uses `native-winusb` by default, including when old vendor DLLs remain beside it.
 
 Physical low/full-speed capture, SuperSpeed monitor throughput, cable-removal
 faults, and older CH56x revisions require further hardware coverage. Passing
 an ISO soak is not a maximum-throughput guarantee.
 
-Subsequent [USB storage stress testing with NAKs enabled](usb-storage-load-20260926.md)
+Subsequent [USB storage stress testing with NAKs enabled](../reports/2026-09-26/usb-storage-load.md)
 over a SuperSpeed monitor connection sustained about 0.88 million recorded
 packets/s without crashes, but reported application queue drops with both
-16,384- and 65,536-packet queues. Unfiltered bulk/NAK load is therefore not
-yet lossless at that workload; consult the capture's completeness counters.
+16,384- and 65,536-packet queues. Follow-up profiling traced these losses to
+synchronous file-write stalls. The [buffered-output fix and validation](../reports/2026-09-26/capture-bottleneck.md#implemented-fix-and-validation)
+repeated that load without drops, including three injected 151..161 ms output
+stalls. Consult the capture's completeness counters for every run.

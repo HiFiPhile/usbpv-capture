@@ -1,0 +1,13 @@
+cmake_minimum_required(VERSION 3.16)
+project(usbpv_diagnostic_tools LANGUAGES CXX)
+if(NOT WIN32)
+  message(FATAL_ERROR "These lab tools use Windows storage and process APIs")
+endif()
+foreach(name analyze_load usb_storage_load)
+  add_executable(${name} ${name}.cpp)
+  target_compile_features(${name} PRIVATE cxx_std_17)
+  if(MINGW)
+    target_link_options(${name} PRIVATE -static)
+  endif()
+endforeach()
+# Hardware workloads are deliberately not CTest tests. Invoke them explicitly.

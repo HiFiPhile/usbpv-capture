@@ -1,5 +1,12 @@
 # USB storage load with NAK capture enabled
 
+Follow-up [bottleneck profiling](capture-bottleneck.md) reproduced
+queue loss during a 61 ms synchronous output-file write and correlated the
+drop timestamps with that call.
+The subsequent [buffered-output fix](capture-bottleneck.md#implemented-fix-and-validation)
+passed the same workload with zero drops, including injected output stalls.
+The measurements below preserve the original pre-fix results.
+
 Generated actual uncached USB storage traffic on 2026-09-26 using the connected
 8 GB Generic Flash Disk (`0011:7788`, PnP serial `C4D197AC`, Windows volume
 `E:`). The sniffer was `R9GF6P0`, using the native WinUSB backend over a
@@ -46,12 +53,12 @@ checks cannot recover or validate packets lost before writing.
 
 Local artifacts (ignored by Git because captures total several gigabytes):
 
-- `build-native/storage-load-20260926-224132/`: default-queue capture, workload
+- `diagnostics/artifacts/2026-09-26/native/storage-load-20260926-224132/`: default-queue capture, workload
   output, summary, full packet analysis, and TShark sample check.
-- `build-native/storage-load-20260926-224353/`: larger-queue capture, workload
+- `diagnostics/artifacts/2026-09-26/native/storage-load-20260926-224353/`: larger-queue capture, workload
   output, summary, full packet analysis, and recovery capture.
-- `build-native/storage-load-comparison.json`: numerical comparison.
-- `build-native/usb_storage_load.cpp` and `run_storage_load.py`: bounded workload
+- `diagnostics/artifacts/2026-09-26/native/storage-load-comparison.json`: numerical comparison.
+- `diagnostics/artifacts/2026-09-26/native/usb_storage_load.cpp` and `run_storage_load.py`: bounded workload
   and capture coordination; the helper verifies the volume/device identity
   before creating its uniquely named test file.
-- `build-native/analyze_load.cpp`: independent saved-packet checker.
+- `diagnostics/artifacts/2026-09-26/native/analyze_load.cpp`: independent saved-packet checker.

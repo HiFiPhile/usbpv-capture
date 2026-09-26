@@ -28,6 +28,7 @@ __pycache__/
 # Captures can be large and may contain device/application data.
 /captures/*
 !/captures/.gitkeep
+/diagnostics/artifacts/
 *.pcap
 *.pcapng
 *.pcapng.events.jsonl

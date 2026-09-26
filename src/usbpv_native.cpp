@@ -212,7 +212,7 @@ struct Device {
       reg(static_cast<UCHAR>(0x20 + i), filters[i]);
   }
 
-  void capture(void* context, pfn_packet_handler callback) noexcept {
+  void capture(void* context, pfn_packet_handler callback, BatchEnd batch_end) noexcept {
     // Stable addresses for OVERLAPPED and buffers until every completion has
     // been collected. This thread alone owns all transfers and the parser.
     struct Read {
@@ -266,7 +266,9 @@ struct Device {
         const BOOL ok = WinUsb_GetOverlappedResult(usb, &read.ov, &n, FALSE);
         read.pending = false;
         check(ok, "complete capture read");
-        if (!parser.feed(read.bytes.data(), n, wall_ns()))
+        const bool parsed = parser.feed(read.bytes.data(), n, wall_ns());
+        if (batch_end) batch_end(context);
+        if (!parsed)
           throw std::runtime_error(parser.error());
         if (parser.started()) {
           std::lock_guard<std::mutex> lock(mutex);
@@ -283,6 +285,13 @@ struct Device {
       fail(ex.what());
     } catch (...) {
       fail("unexpected native capture exception");
+    }
+    // Also publish a partial callback batch if parsing/setup threw. The normal
+    // per-transfer flush makes this a no-op on a clean stop.
+    if (batch_end) {
+      try { batch_end(context); }
+      catch (const std::exception& ex) { fail(ex.what()); }
+      catch (...) { fail("unexpected native batch flush exception"); }
     }
     if (command_started && !stop_sent) {
       try { const auto cmd = register_command(1, 0); write(cmd.data(), 4); }
@@ -322,6 +331,11 @@ const char* UPV_CALL list_devices() {
 
 UPV_HANDLE UPV_CALL open_device(const char* options, int size, void* context,
                                 pfn_packet_handler callback) {
+  return open_device_batched(options, size, context, callback, nullptr);
+}
+
+UPV_HANDLE open_device_batched(const char* options, int size, void* context,
+                                pfn_packet_handler callback, BatchEnd batch_end) {
   last_error.clear();
   try {
     if (!options || size <= 0 || !callback) throw std::runtime_error("invalid native capture options");
@@ -334,7 +348,7 @@ UPV_HANDLE UPV_CALL open_device(const char* options, int size, void* context,
       device->connect(path);
       if (device->serial != serial) continue;
       device->configure(reinterpret_cast<const unsigned char*>(end + 1));
-      device->worker = std::thread(&Device::capture, device.get(), context, callback);
+      device->worker = std::thread(&Device::capture, device.get(), context, callback, batch_end);
       std::unique_lock<std::mutex> lock(device->mutex);
       const bool ready = device->ready.wait_for(lock, std::chrono::seconds(4), [&] {
         return device->started || device->broken.load(std::memory_order_acquire);
