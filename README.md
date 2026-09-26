@@ -5,8 +5,13 @@ It is intended for embedded USB debugging workflows, including test runs
 against projects such as TinyUSB.
 
 The program requires an explicit low/full/high capture speed, disables SOF and
-NAK traffic by default, moves disk I/O out of the vendor callback, and writes
+NAK traffic by default, moves disk I/O out of the capture callback, and writes
 Wireshark/TShark-readable pcapng plus machine-readable JSON status files.
+
+On Windows, CH56x sniffers use a native WinUSB protocol implementation by
+default. This removes the vendor DLL's capture-queue race that caused access
+violations during ISO captures. No vendor DLL is loaded for native capture.
+See [protocol and crash diagnosis](docs/native-protocol.md).
 
 ## Repository layout
 
@@ -37,11 +42,19 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-By default CMake copies the matching bundled vendor runtime beside the
-executable. Set `-DUSBPV_COPY_VENDOR_RUNTIME=OFF` to build without copying it,
-then use `--library PATH` or retain the repository layout. The Linux vendor
+Windows builds embed the sniffer's existing volatile FPGA image as data from
+the bundled SDK; they need only Windows' WinUSB runtime when deployed.
+`--library PATH` explicitly opts into the legacy DLL backend, including its
+known capture race. Older FTDI sniffers require that legacy backend.
+
+Linux still uses the vendor backend; its capture engine has not been replaced.
+CMake copies the runtime by default on Linux (`USBPV_COPY_VENDOR_RUNTIME=ON`)
+and defaults to `OFF` on Windows. The Linux vendor
 library is x86-64 and depends on `libudev.so.1`, `libstdc++.so.6`,
 `libgcc_s.so.1`, and `libc.so.6`.
+
+Run parser regression tests with `ctest --test-dir build --output-on-failure`
+(add `-C Release` for Visual Studio builds).
 
 ## Capture
 

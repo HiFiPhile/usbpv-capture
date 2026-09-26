@@ -4,8 +4,14 @@ project(usbpv_agent_capture VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
+if(WIN32)
+  set(USBPV_VENDOR_RUNTIME_DEFAULT OFF)
+else()
+  set(USBPV_VENDOR_RUNTIME_DEFAULT ON)
+endif()
 option(USBPV_COPY_VENDOR_RUNTIME
-       "Copy the bundled vendor runtime beside usbpv_capture" ON)
+       "Copy the bundled vendor runtime beside usbpv_capture"
+       ${USBPV_VENDOR_RUNTIME_DEFAULT})
 
 add_executable(usbpv_capture src/usbpv_capture.cpp)
 target_compile_features(usbpv_capture PRIVATE cxx_std_17)
@@ -22,6 +28,32 @@ if(MINGW)
   # Keep the agent executable independent of whichever MinGW runtime a host
   # process has installed. The vendor DLL uses separately renamed runtimes.
   target_link_options(usbpv_capture PRIVATE -static)
+endif()
+
+if(WIN32)
+  set(USBPV_FPGA_HEADER "${CMAKE_CURRENT_BINARY_DIR}/usbpv_fpga.hpp")
+  add_custom_command(OUTPUT "${USBPV_FPGA_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+      "-DINPUT=${CMAKE_CURRENT_SOURCE_DIR}/vendor/linux-x64/libusbpv_lib.so"
+      "-DOUTPUT=${USBPV_FPGA_HEADER}"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed-fpga.cmake"
+    DEPENDS vendor/linux-x64/libusbpv_lib.so tools/embed-fpga.cmake
+    VERBATIM)
+  target_sources(usbpv_capture PRIVATE src/usbpv_native.cpp
+    src/usbpv_protocol.cpp "${USBPV_FPGA_HEADER}")
+  target_include_directories(usbpv_capture PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+  target_link_libraries(usbpv_capture PRIVATE winusb setupapi)
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(usbpv_protocol_test tests/protocol_test.cpp src/usbpv_protocol.cpp)
+  target_compile_features(usbpv_protocol_test PRIVATE cxx_std_17)
+  target_include_directories(usbpv_protocol_test PRIVATE include src)
+  if(MINGW)
+    target_link_options(usbpv_protocol_test PRIVATE -static)
+  endif()
+  add_test(NAME protocol COMMAND usbpv_protocol_test)
 endif()
 
 if(UNIX)

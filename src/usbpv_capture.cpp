@@ -23,6 +23,7 @@
 #include <vector>
 
 #ifdef _WIN32
+#include "usbpv_native.hpp"
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -147,74 +148,57 @@ std::vector<std::string> split_devices(const char* devices) {
   return result;
 }
 
+#ifndef _WIN32
 std::string executable_directory(const char* argv0) {
-#ifdef _WIN32
-  std::array<char, 32768> buffer{};
-  const DWORD length = GetModuleFileNameA(nullptr, buffer.data(),
-                                          static_cast<DWORD>(buffer.size()));
-  std::string path = length ? std::string(buffer.data(), length)
-                            : std::string(argv0 ? argv0 : "");
-  const std::size_t slash = path.find_last_of("\\/");
-  return slash == std::string::npos ? "." : path.substr(0, slash);
-#else
   std::array<char, 4096> buffer{};
   const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
   std::string path = length > 0 ? std::string(buffer.data(), static_cast<std::size_t>(length))
                                 : std::string(argv0 ? argv0 : "");
   const std::size_t slash = path.find_last_of('/');
   return slash == std::string::npos ? "." : path.substr(0, slash);
-#endif
 }
 
 std::string default_library_path(const char* argv0) {
-#ifdef _WIN32
-  const std::string filename = "usbpv_lib.dll";
-  const std::string separator = "\\";
-  const std::string runtime_directory = sizeof(void*) == 8
-                                            ? "vendor\\windows-x64"
-                                            : "vendor\\windows-x86";
-#else
   const std::string filename = "libusbpv_lib.so";
   const std::string separator = "/";
   const std::string runtime_directory = "vendor/linux-x64";
-#endif
   const std::string executable_dir = executable_directory(argv0);
   std::vector<std::string> candidates;
   candidates.push_back(executable_dir + separator + filename);
   candidates.push_back(executable_dir + separator + runtime_directory + separator + filename);
   candidates.push_back(executable_dir + separator + ".." + separator + runtime_directory +
                        separator + filename);
-#ifdef _WIN32
-  std::array<char, 32768> current{};
-  const DWORD length = GetCurrentDirectoryA(static_cast<DWORD>(current.size()), current.data());
-  if (length && length < current.size()) {
-    const std::string current_dir(current.data(), length);
-    candidates.push_back(current_dir + separator + filename);
-    candidates.push_back(current_dir + separator + runtime_directory + separator + filename);
-  }
-#else
   std::array<char, 4096> current{};
   if (getcwd(current.data(), current.size())) {
     const std::string current_dir(current.data());
     candidates.push_back(current_dir + separator + filename);
     candidates.push_back(current_dir + separator + runtime_directory + separator + filename);
   }
-#endif
   for (const std::string& candidate : candidates) {
     if (path_exists(candidate)) return candidate;
   }
   return candidates.front();
 }
+#endif
 
-class VendorApi {
+class CaptureApi {
  public:
-  ~VendorApi() { unload(); }
-  VendorApi(const VendorApi&) = delete;
-  VendorApi& operator=(const VendorApi&) = delete;
-  VendorApi() = default;
+  ~CaptureApi() { unload(); }
+  CaptureApi(const CaptureApi&) = delete;
+  CaptureApi& operator=(const CaptureApi&) = delete;
+  CaptureApi() = default;
 
   bool load(const std::string& path, std::string& error) {
 #ifdef _WIN32
+    if (path.empty()) {
+      list_devices = usbpv::native::list_devices;
+      open_device = usbpv::native::open_device;
+      close_device = usbpv::native::close_device;
+      get_last_error = usbpv::native::get_last_error;
+      get_error_string = usbpv::native::get_error_string;
+      get_monitor_speed = usbpv::native::get_monitor_speed;
+      return true;
+    }
     module_ = LoadLibraryExA(path.c_str(), nullptr,
                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                                  LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -251,6 +235,15 @@ class VendorApi {
     const int code = get_last_error();
     const char* message = get_error_string(code);
     return std::to_string(code) + ": " + (message ? message : "unknown USBPV error");
+  }
+
+  bool failed(UPV_HANDLE device) const {
+#ifdef _WIN32
+    return !module_ && usbpv::native::failed(device);
+#else
+    (void)device;
+    return false;
+#endif
   }
 
   pfnt_upv_list_devices list_devices = nullptr;
@@ -364,7 +357,7 @@ void print_help() {
       "  --drop ADDR:EP       Hardware drop filter; repeat up to four times\n"
       "  --ready-file PATH    Create after flushing, immediately before capture\n"
       "  --stop-file PATH     Stop when this path appears\n"
-      "  --library PATH       Explicit usbpv_lib DLL/SO path\n\n"
+      "  --library PATH       Opt into legacy usbpv_lib DLL/SO backend\n\n"
       "Outputs FILE, FILE.events.jsonl, and FILE.summary.json must not exist.\n"
       "All status lines on stdout are JSON. Auto speed is intentionally unsupported.\n";
 }
@@ -583,7 +576,8 @@ long UPV_CB packet_callback(void* opaque, unsigned long seconds,
   }
   const int type = GetPacketType(status);
   if (type == UPV_DATA_PACKET) {
-    if ((!data && length != 0) || length > kMaxPacketBytes) {
+    if ((!data && length != 0) || length == 0 || length > kMaxPacketBytes ||
+        (status & 0xf00)) {
       context->counters.invalid_dropped.fetch_add(1, std::memory_order_relaxed);
       return 0;
     }
@@ -856,7 +850,9 @@ std::string make_status_json(const char* event, const Config& config,
   std::ostringstream out;
   out << "{\"event\":\"" << event << "\",\"complete\":"
       << (complete ? "true" : "false") << ",\"reason\":\""
-      << json_escape(reason) << "\",\"serial\":\"" << json_escape(config.serial)
+      << json_escape(reason) << "\",\"backend\":\""
+      << (config.library.empty() ? "native-winusb" : "vendor-library")
+      << "\",\"serial\":\"" << json_escape(config.serial)
       << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
       << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)
       << "\",\"events_file\":\"" << json_escape(config.events)
@@ -880,8 +876,10 @@ int emit_error(const std::string& code, const std::string& message, int exit_cod
   return exit_code;
 }
 
-bool select_device(VendorApi& api, Config& config, std::string& error) {
-  const std::vector<std::string> devices = split_devices(api.list_devices());
+bool select_device(CaptureApi& api, Config& config, std::string& error) {
+  const char* listed = api.list_devices();
+  if (!listed) { error = api.last_error(); return false; }
+  const std::vector<std::string> devices = split_devices(listed);
   if (devices.empty()) {
     error = "no USBPV device connected; after a NAK-related jam, power-cycle the sniffer";
     return false;
@@ -907,13 +905,17 @@ int run_list(int argc, char** argv) {
     if (std::string(argv[i]) == "--library" && i + 1 < argc) library = argv[++i];
     else return emit_error("usage", "list accepts only --library PATH", 2);
   }
+#ifndef _WIN32
   if (library.empty()) {
     library = default_library_path(argv[0]);
   }
-  VendorApi api;
+#endif
+  CaptureApi api;
   std::string error;
   if (!api.load(library, error)) return emit_error("library_load", error, 3);
-  const auto devices = split_devices(api.list_devices());
+  const char* listed = api.list_devices();
+  if (!listed) return emit_error("device_list", api.last_error(), 4);
+  const auto devices = split_devices(listed);
   std::cout << "{\"event\":\"devices\",\"count\":" << devices.size()
             << ",\"devices\":[";
   for (std::size_t i = 0; i < devices.size(); ++i) {
@@ -946,10 +948,12 @@ int run_capture(int argc, char** argv) {
       return emit_error("path_exists", kind + outputs[i], 2);
     }
   }
+#ifndef _WIN32
   if (config.library.empty()) {
     config.library = default_library_path(argv[0]);
   }
-  VendorApi api;
+#endif
+  CaptureApi api;
   if (!api.load(config.library, error)) return emit_error("library_load", error, 3);
   if (!select_device(api, config, error)) return emit_error("device_selection", error, 4);
 
@@ -968,6 +972,10 @@ int run_capture(int argc, char** argv) {
     std::cerr << "warning: could not query USBPV monitor port speed\n";
   }
   if (config.flush_ms) std::this_thread::sleep_for(std::chrono::milliseconds(config.flush_ms));
+  if (api.failed(device)) {
+    api.close_device(device);
+    return emit_error("device_read", api.last_error(), 5);
+  }
 
   PcapngWriter pcap;
   const std::string description = "USBPV serial " + config.serial + ", explicit " +
@@ -990,7 +998,9 @@ int run_capture(int argc, char** argv) {
   context.accepting.store(true, std::memory_order_release);
 
   std::ostringstream ready;
-  ready << "{\"event\":\"ready\",\"serial\":\"" << json_escape(config.serial)
+  ready << "{\"event\":\"ready\",\"backend\":\""
+        << (config.library.empty() ? "native-winusb" : "vendor-library")
+        << "\",\"serial\":\"" << json_escape(config.serial)
         << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
         << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)
         << "\",\"events_file\":\"" << json_escape(config.events)
@@ -1019,6 +1029,10 @@ int run_capture(int argc, char** argv) {
     }
     if (writer_state.failed.load(std::memory_order_acquire)) {
       reason = "writer_error";
+      break;
+    }
+    if (api.failed(device)) {
+      reason = "device_read_error";
       break;
     }
     if (config.duration_seconds > 0.0 && elapsed >= config.duration_seconds) {

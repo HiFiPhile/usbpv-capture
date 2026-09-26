@@ -1,6 +1,6 @@
 # USBPV agent capture
 
-`usbpv_capture` is a bounded, automation-oriented front end for `usbpv_lib`.
+`usbpv_capture` is a bounded, automation-oriented USBPV capture program.
 It writes USB link-layer packets to pcapng and writes bus events plus a final
 summary to JSON files. Wireshark and TShark understand the speed-specific raw
 USB link types used in the pcapng file.
@@ -21,10 +21,17 @@ cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-CMake copies the matching bundled vendor runtime beside the executable. The
-program also searches the repository's `vendor/windows-x64`,
-`vendor/windows-x86`, or `vendor/linux-x64` directory. Pass an absolute path
-with `--library` to override discovery.
+On Windows, the default backend talks directly to CH56x sniffers through
+WinUSB. It implements FPGA setup, register commands, stream framing, filters,
+and timestamps without loading the vendor DLL. Existing CLI invocations keep
+working; ready/summary JSON identifies this backend as `native-winusb`.
+
+Pass an absolute `--library` path only to opt into the legacy vendor engine
+(for example, for an older FTDI sniffer). That path retains the vendor's
+known capture-queue race. See [native protocol details](native-protocol.md).
+Linux continues to discover and use the bundled vendor library. CMake copies
+vendor runtimes by default on Linux, but not on Windows; the copy option is
+`USBPV_COPY_VENDOR_RUNTIME`.
 
 ## Agent workflow
 
@@ -69,7 +76,9 @@ NAKs can overwhelm the sniffer. The program drains callbacks for 250 ms by
 default before declaring itself ready; change this with `--flush-ms`. If a
 session still opens with corrupt packets, disconnect/reconnect or power-cycle
 the sniffer before retrying. Queue loss, oversized/corrupt callbacks, device
-overflow events, and file write failures make the command return nonzero.
+overflow events, malformed native stream records, USB transport failures,
+and file write failures make the command return nonzero. Native shutdown
+waits for the stop response and reaps pending reads before releasing buffers.
 
 Run `usbpv_capture help` for all options. Address filters accept USB addresses
 0..127, endpoints 0..15, and `*` as a wildcard. Up to four `--accept` or four
