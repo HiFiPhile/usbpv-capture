@@ -8,7 +8,6 @@ void require(bool ok, const char* message) {
 }
 void native_batches() {
   usbpv::CaptureContext context(300, UPV_Cap_Speed_High);
-  context.native_batching = true;
   const unsigned char packet[] = {0x5a};
   auto data = [&](unsigned seq) { usbpv::packet_callback(&context, 10, seq, packet, 1, UPV_SPD_HIGH); };
   data(0); // Startup flushing must not enter the queue.
@@ -41,7 +40,7 @@ void native_batches() {
 }
 void errors_and_full_queue() {
   usbpv::CaptureContext context(3, UPV_Cap_Speed_High);
-  context.native_batching = true; context.accepting = true;
+  context.accepting = true;
   const unsigned char packet[] = {0x5a};
   usbpv::packet_callback(&context, 0, 0, nullptr, 1, UPV_SPD_HIGH);
   usbpv::packet_callback(&context, 0, 0, packet, 0, UPV_SPD_HIGH);
@@ -57,19 +56,8 @@ void errors_and_full_queue() {
   require(context.queue.pop_batch(output, 8) == 3 && output[0].nanoseconds == 0 && output[2].nanoseconds == 2,
           "full queue must preserve accepted prefix");
 }
-void legacy_immediate() {
-  usbpv::CaptureContext context(3, UPV_Cap_Speed_High);
-  context.accepting = true;
-  const unsigned char packet[] = {0x5a};
-  usbpv::packet_callback(&context, 0, 7, packet, 1, UPV_SPD_HIGH);
-  require(context.counters.data_packets == 1 && context.counters.callbacks == 1 &&
-          context.pending_count == 0 && context.pending_callbacks == 0, "legacy callback delayed");
-  std::vector<usbpv::PacketSlot> output;
-  require(context.queue.pop_batch(output, 3) == 1 && output[0].nanoseconds == 7, "legacy callback changed");
-}
 void callbacks_without_packets() {
   usbpv::CaptureContext context(3, UPV_Cap_Speed_High);
-  context.native_batching = true;
   for (unsigned i = 0; i < 1000; ++i)
     usbpv::packet_callback(&context, 0, 0, nullptr, 0, UPV_SPD_HIGH);
   require(context.counters.callbacks == 0 && context.pending_callbacks == 1000, "native count was not batched");
@@ -85,7 +73,7 @@ void callbacks_without_packets() {
 }
 void timed_publication() {
   usbpv::CaptureContext context(1024, UPV_Cap_Speed_High);
-  context.native_batching = true; context.accepting = true;
+  context.accepting = true;
   const unsigned char packet[] = {0x5a};
   auto data = [&](unsigned sequence) {
     usbpv::packet_callback(&context, 0, sequence, packet, 1, UPV_SPD_HIGH);
@@ -121,6 +109,6 @@ void timed_publication() {
 }
 }  // namespace
 int main() {
-  native_batches(); errors_and_full_queue(); legacy_immediate(); callbacks_without_packets(); timed_publication();
-  std::cout << "callback tests passed (partial batches, stop, counters, errors, legacy)\n";
+  native_batches(); errors_and_full_queue(); callbacks_without_packets(); timed_publication();
+  std::cout << "callback tests passed (partial batches, stop, counters, errors)\n";
 }

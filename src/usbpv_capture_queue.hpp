@@ -33,8 +33,7 @@ struct CaptureContext {
   Counters counters;
   const int expected_packet_speed;
   std::atomic<bool> accepting{false};
-  // Native backend has one callback owner. Legacy callbacks keep using push.
-  bool native_batching = false;
+  // The native reader is the sole callback owner.
   std::uint64_t pending_callbacks = 0;
   std::int64_t batch_deadline_ns = 0;
   std::vector<PacketSlot> pending;
@@ -94,11 +93,7 @@ inline long UPV_CB packet_callback(void* opaque, unsigned long seconds,
                             unsigned long nanoseconds, const void* data,
                             unsigned long length, long status) {
   auto* context = static_cast<CaptureContext*>(opaque);
-  if (context->native_batching) ++context->pending_callbacks;
-  else {
-    context->counters.callbacks.fetch_add(1, std::memory_order_relaxed);
-    context->counters.last_callback_ns.store(steady_now_ns(), std::memory_order_relaxed);
-  }
+  ++context->pending_callbacks;
   if (!context->accepting.load(std::memory_order_acquire)) {
     context->counters.flushed.fetch_add(1, std::memory_order_relaxed);
     return 0;
@@ -118,31 +113,13 @@ inline long UPV_CB packet_callback(void* opaque, unsigned long seconds,
     context->counters.invalid_dropped.fetch_add(1, std::memory_order_relaxed);
     return 0;
   }
-  if (context->native_batching) {
-    auto& packet = context->pending[context->pending_count++];
-    packet.seconds = static_cast<std::uint32_t>(seconds);
-    packet.nanoseconds = static_cast<std::uint32_t>(nanoseconds);
-    packet.status = static_cast<std::int32_t>(status);
-    packet.length = static_cast<std::uint16_t>(length);
-    if (length) std::memcpy(packet.data.data(), data, length);
-    if (context->pending_count == context->pending.size()) flush_callback_batch(context);
-    return 0;
-  }
-  if (!context->queue.push(static_cast<std::uint32_t>(seconds),
-                           static_cast<std::uint32_t>(nanoseconds), data,
-                           static_cast<std::size_t>(length),
-                           static_cast<std::int32_t>(status))) {
-    context->counters.queue_dropped.fetch_add(1, std::memory_order_relaxed);
-    return 0;
-  }
-  if (type == UPV_DATA_PACKET) {
-    context->counters.data_packets.fetch_add(1, std::memory_order_relaxed);
-    context->counters.data_bytes.fetch_add(length, std::memory_order_relaxed);
-  } else {
-    context->counters.bus_events.fetch_add(1, std::memory_order_relaxed);
-    if (type == UPV_OVERFLOW)
-      context->counters.device_overflows.fetch_add(1, std::memory_order_relaxed);
-  }
+  auto& packet = context->pending[context->pending_count++];
+  packet.seconds = static_cast<std::uint32_t>(seconds);
+  packet.nanoseconds = static_cast<std::uint32_t>(nanoseconds);
+  packet.status = static_cast<std::int32_t>(status);
+  packet.length = static_cast<std::uint16_t>(length);
+  if (length) std::memcpy(packet.data.data(), data, length);
+  if (context->pending_count == context->pending.size()) flush_callback_batch(context);
   return 0;
 }
 

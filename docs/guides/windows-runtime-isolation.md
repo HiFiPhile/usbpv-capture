@@ -1,5 +1,9 @@
 # USBPV runtime isolation
 
+This is an archived guide for the original vendor SDK and examples.
+`usbpv_capture` uses native capture exclusively; these DLLs belong to the
+archived SDK examples.
+
 `vendor/windows-x64/usbpv_lib.dll` is the original vendor binary with only its
 PE dependency-name strings changed. It imports uniquely named copies of its
 2018 MinGW runtimes:

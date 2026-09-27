@@ -11,7 +11,7 @@ NATIVE_CPPFLAGS := -Ibuild-make
 SAMPLE_LIBS := -lpthread
 else
 TARGET := usbpv_capture
-LDLIBS := -ldl -pthread $(shell pkg-config --libs libusb-1.0)
+LDLIBS := -pthread $(shell pkg-config --libs libusb-1.0)
 NATIVE_SOURCES := src/usbpv_native_linux.cpp src/usbpv_protocol.cpp
 NATIVE_HEADER := build-make/usbpv_fpga.hpp
 NATIVE_CPPFLAGS := -Ibuild-make $(patsubst -I%,-isystem %,$(shell pkg-config --cflags libusb-1.0))

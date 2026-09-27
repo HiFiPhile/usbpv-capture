@@ -3,7 +3,8 @@
 This diagram describes the native WinUSB/libusb paths with the default
 16,384-slot packet queue. Blue nodes are explicit application buffers; arrows
 label payload copies and thread handoffs. Hardware, driver, C++ stream, and OS
-file-cache buffering are separate and their capacities are not specified here.
+file-cache buffering are separate. The user-reported 8 MB sniffer FIFO has not
+been independently measured; it is excluded from the host-buffer totals below.
 
 ```mermaid
 flowchart TD
@@ -66,7 +67,7 @@ packets such as NAKs; copies use actual payload length.
 | Buffer | Capacity | Definition |
 | --- | --- | --- |
 | Pending Windows reads | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native.cpp) |
-| Pending Linux reads (alternative) | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native_linux.cpp) |
+| Pending Linux reads | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native_linux.cpp) |
 | Parser fragment record | 1,056 bytes | [`ProtocolParser::record_`](../../src/usbpv_protocol.hpp) |
 | Reader callback staging | 528,384 bytes | [`CaptureContext::pending`, 256 slots](../../src/usbpv_capture_queue.hpp) |
 | Shared packet/event queue | 33,816,576 bytes by default | [`PacketQueue::slots_`, `PacketSlot`](../../src/usbpv_queue.hpp); capacity comes from [`kDefaultQueueCapacity` / `--queue-capacity`](../../src/usbpv_capture.cpp) |
@@ -79,6 +80,13 @@ not total process memory: it excludes thread stacks, allocator/container
 overhead, output bookkeeping, temporary strings, FPGA setup data, libraries,
 and driver/OS buffers. The **32 MiB output pool is separate from the 32.25 MiB
 packet queue**. Changing `--queue-capacity` changes only the latter.
+
+The read ring's 512 KiB is nominal allocation, not guaranteed burst headroom:
+a short USB completion consumes a whole read slot until it is serviced and
+resubmitted. Linux uses a 250-microsecond coalescing target during active
+SuperSpeed monitor capture; OS scheduling may delay service further. See the
+[burst tests and FIFO analysis](../reports/2026-09-27/linux-native.md#burst-margin-and-the-reported-8-mb-device-fifo)
+for measured recovery and limitations.
 
 ## Publication, ownership, and failure
 

@@ -1,10 +1,10 @@
 # Native Linux backend and USB disk tuning
 
-Linux now defaults to `native-libusb` for CH56x sniffers. It implements FPGA
+Linux uses `native-libusb` for CH56x sniffers. It implements FPGA
 loading, register setup, exclusive interface ownership, asynchronous reads,
 start/stop handshakes, cancellation/reaping, and error propagation. It reuses
-the protocol parser and bounded callback/output pipeline. The vendor library
-is loaded only with explicit `--library PATH`.
+the protocol parser and bounded callback/output pipeline. See the
+[capture guide](../../guides/agent-capture.md) for build and usage instructions.
 
 The Linux transport uses **32 reads of 16 KiB**, retaining the same 512 KiB
 reserve as Windows. Optional libusb DMA allocations avoid the Linux usbfs

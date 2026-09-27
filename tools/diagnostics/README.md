@@ -1,14 +1,19 @@
 # Diagnostic tools
 
 These are explicit lab commands, separate from the normal capture build and
-CTest. The workload helper is restricted to the previously verified flash
+CTest. For comparisons between operating systems, use the Windows helper below
+and the [matching Linux write/read workload](#linux-workload-matching-windows).
+The [Linux read-only runner](#linux-read-only-usb-storage-load) uses a different
+workload and should not be used for a direct CPU comparison.
+
+The Windows workload helper is restricted to the previously verified flash
 drive on **E:** (physical disk 1, USB storage serial bytes `03 43`, corresponding
 to USB PnP serial `C4D197AC`). It refuses a different identity. Each workload
 creates one new, uniquely named 64 MiB file, performs verified uncached reads
 for 15 seconds, and deletes that file on close. Existing drive files are not
 changed. Volume identity queries may require an elevated shell.
 
-## Build helpers
+## Windows helpers
 
 From the repository root, using the same compiler as the main build:
 
@@ -110,10 +115,16 @@ A restricted sandbox may expose a read-only view of an otherwise writable mount.
 cmake -S tools/diagnostics -B build-linux-tools -DCMAKE_BUILD_TYPE=Release
 cmake --build build-linux-tools -j
 python tools/diagnostics/run_linux_storage_write_load.py \
-  --directory /run/media/mengsk/27F9-218C \
+  --exe build-linux/usbpv_capture \
+  --load-exe build-linux-tools/usb_storage_load_linux \
+  --directory /path/to/verified-usb-mount \
   --output diagnostics/artifacts/linux-write-read-01
 build-linux-tools/analyze_load diagnostics/artifacts/linux-write-read-01/traffic.pcapng
 ```
+
+Replace `/path/to/verified-usb-mount` with the actual mount directory of the
+verified disk; the helper refuses other USB identities. Build the main Linux
+capture executable first using the [quick start](../../README.md#linux).
 
 The runner matches the Windows profiler's capture flags, default queue,
 initial/final two-second idle intervals, and 250 ms CPU sampling. It measures

@@ -14,12 +14,15 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
-Linux:
+For MinGW, configure with `-G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release`
+and use `build/usbpv_capture.exe` as the executable path.
+
+Linux (libusb 1.0.21 or newer):
 
 ```sh
 sudo apt-get install build-essential cmake pkg-config libusb-1.0-0-dev
-cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-cmake --build build -j
+cmake -S . -B build-linux -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux -j
 ```
 
 The native backend talks directly to CH56x sniffers through WinUSB on Windows
@@ -27,11 +30,9 @@ and libusb on Linux. Both implement FPGA setup, register commands, stream
 framing, filters, and timestamps without loading the vendor capture runtime.
 Ready/summary JSON identifies them as `native-winusb` and `native-libusb`.
 
-Pass an absolute `--library` path to opt into the legacy vendor engine (for
-example, for an older FTDI sniffer). The Windows DLL retains its known
-capture-queue race. See [native protocol details](../reference/native-protocol.md).
-CMake defaults `USBPV_COPY_VENDOR_RUNTIME=OFF` on both platforms; existing
-build directories retain their cached setting.
+Capture supports only CH56x sniffers; older FTDI sniffers are unsupported.
+Installation contains only the capture executable.
+See [native protocol details](../reference/native-protocol.md).
 
 ### Linux USB permissions
 
@@ -51,32 +52,71 @@ sniffer returns a JSON error.
 
 ## Agent workflow
 
-List sniffers:
+Run from the repository root. The Windows examples use a Visual Studio build;
+with MinGW, use `build/usbpv_capture.exe` without the `Release` directory.
+The Windows capture interface must use the WinUSB driver.
 
-```powershell
-.\usbpv_capture.exe list
+List sniffers and capture high-speed traffic for 20 seconds on Linux:
+
+```sh
+mkdir -p captures
+./build-linux/usbpv_capture list
+./build-linux/usbpv_capture capture --speed high --duration 20 --output captures/run.pcapng
 ```
 
-Capture high-speed traffic for 20 seconds:
+Or on Windows:
 
 ```powershell
-.\usbpv_capture.exe capture --speed high --duration 20 --output captures\run.pcapng
+New-Item -ItemType Directory -Force captures | Out-Null
+.\build\Release\usbpv_capture.exe list
+.\build\Release\usbpv_capture.exe capture --speed high --duration 20 --output captures\run.pcapng
 ```
 
-Coordinate an external test with files:
+One available sniffer is selected automatically. With multiple devices, pass
+`--serial SN` using a serial returned by `list`. Choose `--speed low`, `full`,
+or `high` for the captured bus. The SuperSpeed monitor link is a separate
+connection to the capture computer; it does not change the captured bus speed.
+
+Output directories must already exist. Use a fresh basename for each capture;
+the pcapng, events, summary, ready, and stop paths must be distinct and must
+not already exist.
+
+Coordinate an external test with files on Linux:
+
+```sh
+./build-linux/usbpv_capture capture --speed high --duration 0 \
+  --ready-file capture.ready --stop-file capture.stop --output captures/coordinated.pcapng
+```
+
+Or on Windows:
 
 ```powershell
-.\usbpv_capture.exe capture --speed high --duration 0 `
-  --ready-file capture.ready --stop-file capture.stop --output captures\run.pcapng
+.\build\Release\usbpv_capture.exe capture --speed high --duration 0 `
+  --ready-file capture.ready --stop-file capture.stop --output captures\coordinated.pcapng
 ```
 
 Wait until `capture.ready` exists before starting the device test. Create
 `capture.stop` when the test finishes. Both control paths must not already
-exist. The program also accepts Ctrl+C.
+exist. Create the stop file with `touch capture.stop` on Linux or
+`New-Item -ItemType File capture.stop` in PowerShell. Wait for the capture
+process to exit and inspect its summary before using the capture.
+The program also accepts Ctrl+C.
 
-Every stdout line is one JSON object. The final object is also written to
-`captures/run.pcapng.summary.json`; reset/suspend/overflow events are written
-to `captures/run.pcapng.events.jsonl`. Diagnostics go to stderr.
+Status lines on stdout are JSON objects (`help` prints plain text). For an
+output path `FILE`, the final summary is also written to `FILE.summary.json`;
+reset/suspend/overflow events go to `FILE.events.jsonl`. Diagnostics go to stderr.
+A successful capture exits zero and reports `complete: true`; detected loss
+or errors produce a nonzero exit. Failures before capture starts may emit only
+an error object and no summary file. Treat `ready` as permission to begin the
+test workload, not proof that the eventual capture completed successfully.
+
+The default duration is 30 seconds. `--duration 0` disables that limit;
+`--max-packets N`, `--idle-timeout SEC`, a stop file, or Ctrl+C can still stop
+capture. Packet-count stopping is checked asynchronously, so the final count
+can exceed the requested threshold. Idle timeout measures callback activity,
+including bus events, rather than only accepted data packets.
+
+## Buffering and platform tuning
 
 Packet processing encodes pcapng into a fixed pool of 32 one-MiB buffers.
 See the [data-flow diagram](../reference/capture-data-flow.md) for all buffer
@@ -101,8 +141,18 @@ batch publishes immediately; idle waits, stop, and reader errors flush the
 tail. OS scheduling can delay publication beyond this target. Total
 callback count and host-side activity time update at each transfer; successful
 packet counters update when publishing. Captured USB timestamps are unchanged.
-The legacy callback path continues to publish each packet immediately. See
-the [CPU follow-up measurements](../reports/2026-09-27/cpu-optimization.md).
+See the [CPU follow-up measurements](../reports/2026-09-27/cpu-optimization.md).
+
+Linux additionally waits for a 250-microsecond target interval before handling
+USB completions when the next read is incomplete during active SuperSpeed
+monitor capture. USB 2.0 monitor links and start/stop handshakes skip this wait.
+Windows retains its existing WinUSB policy. See the
+[matched write/read workload and burst tests](../reports/2026-09-27/linux-native.md)
+for CPU comparisons and the limits of the measured burst margin. The reported
+8 MB device FIFO is separate from host buffers; its capacity alone cannot
+guarantee lossless capture during a NAK storm.
+
+## Packet filters and NAK capture
 
 The default packet mask is `0xEB`: ACK, ISO, STALL, PING, incomplete, and
 error packets are enabled; SOF and NAK are disabled. Use `--include-sof` when
@@ -110,7 +160,7 @@ frame timing is relevant. Use `--include-nak` only for a short, tightly
 filtered capture, for example:
 
 ```powershell
-.\usbpv_capture.exe capture --speed high --duration 2 --include-nak `
+.\build\Release\usbpv_capture.exe capture --speed high --duration 2 --include-nak `
   --accept 5:2 --output nak-debug.pcapng
 ```
 
@@ -123,5 +173,6 @@ and file write failures make the command return nonzero. Native shutdown
 waits for the stop response and reaps pending reads before releasing buffers.
 
 Run `usbpv_capture help` for all options. Address filters accept USB addresses
-0..127, endpoints 0..15, and `*` as a wildcard. Up to four `--accept` or four
-`--drop` pairs can be sent to the hardware.
+0..127, endpoints 0..15, and `*` as a wildcard. Quote wildcard filters in the
+shell, for example `--accept "5:*"`. Up to four `--accept` or four `--drop`
+pairs can be sent to the hardware; the two modes cannot be combined.

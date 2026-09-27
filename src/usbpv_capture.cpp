@@ -32,9 +32,7 @@
 #include <windows.h>
 #include <sys/stat.h>
 #else
-#include <dlfcn.h>
 #include <sys/stat.h>
-#include <unistd.h>
 #endif
 
 namespace {
@@ -156,101 +154,11 @@ std::vector<std::string> split_devices(const char* devices) {
   return result;
 }
 
-class CaptureApi {
- public:
-  ~CaptureApi() { unload(); }
-  CaptureApi(const CaptureApi&) = delete;
-  CaptureApi& operator=(const CaptureApi&) = delete;
-  CaptureApi() = default;
-
-  bool load(const std::string& path, std::string& error) {
-    if (path.empty()) {
-      list_devices = usbpv::native::list_devices;
-      open_device = usbpv::native::open_device;
-      close_device = usbpv::native::close_device;
-      get_last_error = usbpv::native::get_last_error;
-      get_error_string = usbpv::native::get_error_string;
-      get_monitor_speed = usbpv::native::get_monitor_speed;
-      return true;
-    }
-#ifdef _WIN32
-    module_ = LoadLibraryExA(path.c_str(), nullptr,
-                             LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
-                                 LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
-    if (!module_) {
-      error = "cannot load " + path + " (Windows error " +
-              std::to_string(GetLastError()) + ")";
-      return false;
-    }
-#else
-    module_ = dlopen(path.c_str(), RTLD_NOW | RTLD_LOCAL);
-    if (!module_) {
-      const char* detail = dlerror();
-      error = "cannot load " + path + ": " + (detail ? detail : "unknown error");
-      return false;
-    }
-#endif
-    list_devices = symbol<pfnt_upv_list_devices>("upv_list_devices");
-    open_device = symbol<pfnt_upv_open_device>("upv_open_device");
-    close_device = symbol<pfnt_upv_close_device>("upv_close_device");
-    get_last_error = symbol<pfnt_upv_get_last_error>("upv_get_last_error");
-    get_error_string = symbol<pfnt_upv_get_error_string>("upv_get_error_string");
-    get_monitor_speed = symbol<pfnt_upv_get_monitor_speed>("upv_get_monitor_speed");
-    if (!list_devices || !open_device || !close_device || !get_last_error ||
-        !get_error_string || !get_monitor_speed) {
-      error = "USBPV library is missing one or more required exports";
-      unload();
-      return false;
-    }
-    return true;
-  }
-
-  std::string last_error() const {
-    if (!get_last_error || !get_error_string) return "unknown USBPV error";
-    const int code = get_last_error();
-    const char* message = get_error_string(code);
-    return std::to_string(code) + ": " + (message ? message : "unknown USBPV error");
-  }
-
-  bool failed(UPV_HANDLE device) const {
-    return !module_ && usbpv::native::failed(device);
-  }
-
-  pfnt_upv_list_devices list_devices = nullptr;
-  pfnt_upv_open_device open_device = nullptr;
-  pfnt_upv_close_device close_device = nullptr;
-  pfnt_upv_get_last_error get_last_error = nullptr;
-  pfnt_upv_get_error_string get_error_string = nullptr;
-  pfnt_upv_get_monitor_speed get_monitor_speed = nullptr;
-
- private:
-  template <typename T>
-  T symbol(const char* name) {
-#ifdef _WIN32
-    FARPROC raw = GetProcAddress(module_, name);
-#else
-    void* raw = dlsym(module_, name);
-#endif
-    static_assert(sizeof(T) == sizeof(raw), "unsupported function pointer representation");
-    T result = nullptr;
-    std::memcpy(&result, &raw, sizeof(result));
-    return result;
-  }
-  void unload() {
-    if (!module_) return;
-#ifdef _WIN32
-    FreeLibrary(module_);
-#else
-    dlclose(module_);
-#endif
-    module_ = nullptr;
-  }
-#ifdef _WIN32
-  HMODULE module_ = nullptr;
-#else
-  void* module_ = nullptr;
-#endif
-};
+std::string native_error() {
+  const int code = usbpv::native::get_last_error();
+  const char* message = usbpv::native::get_error_string(code);
+  return std::to_string(code) + ": " + (message ? message : "unknown USBPV error");
+}
 
 struct EndpointFilter {
   std::uint8_t address = UPV_NO_ADDR;
@@ -266,7 +174,6 @@ struct Config {
   std::string summary;
   std::string ready_file;
   std::string stop_file;
-  std::string library;
   std::string speed_name;
   UPV_CaptureSpeed speed = UPV_Cap_Speed_High;
   std::uint8_t flags = kDefaultFlags;
@@ -312,7 +219,7 @@ void print_help() {
   std::cout <<
       "USBPV agent capture\n\n"
       "Usage:\n"
-      "  usbpv_capture list [--library PATH]\n"
+      "  usbpv_capture list\n"
       "  usbpv_capture capture --speed high|full|low --output FILE [options]\n\n"
       "Capture options:\n"
       "  --serial SN          Select device; one connected device is auto-selected\n"
@@ -327,7 +234,7 @@ void print_help() {
       "  --drop ADDR:EP       Hardware drop filter; repeat up to four times\n"
       "  --ready-file PATH    Create after flushing, immediately before capture\n"
       "  --stop-file PATH     Stop when this path appears\n"
-      "  --library PATH       Opt into legacy usbpv_lib DLL/SO backend\n\n"
+      "\n"
       "Outputs FILE, FILE.events.jsonl, and FILE.summary.json must not exist.\n"
       "All status lines on stdout are JSON. Auto speed is intentionally unsupported.\n";
 }
@@ -364,8 +271,6 @@ bool parse_capture_args(int argc, char** argv, Config& config, std::string& erro
       if (!take_value(argc, argv, i, config.output, error)) return false;
     } else if (arg == "--serial") {
       if (!take_value(argc, argv, i, config.serial, error)) return false;
-    } else if (arg == "--library") {
-      if (!take_value(argc, argv, i, config.library, error)) return false;
     } else if (arg == "--ready-file") {
       if (!take_value(argc, argv, i, config.ready_file, error)) return false;
     } else if (arg == "--stop-file") {
@@ -719,7 +624,7 @@ std::string make_status_json(const char* event, const Config& config,
   out << "{\"event\":\"" << event << "\",\"complete\":"
       << (complete ? "true" : "false") << ",\"reason\":\""
       << json_escape(reason) << "\",\"backend\":\""
-      << (config.library.empty() ? kNativeBackend : "vendor-library")
+      << kNativeBackend
       << "\",\"serial\":\"" << json_escape(config.serial)
       << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
       << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)
@@ -745,9 +650,9 @@ int emit_error(const std::string& code, const std::string& message, int exit_cod
   return exit_code;
 }
 
-bool select_device(CaptureApi& api, Config& config, std::string& error) {
-  const char* listed = api.list_devices();
-  if (!listed) { error = api.last_error(); return false; }
+bool select_device(Config& config, std::string& error) {
+  const char* listed = usbpv::native::list_devices();
+  if (!listed) { error = native_error(); return false; }
   const std::vector<std::string> devices = split_devices(listed);
   if (devices.empty()) {
     error = "no USBPV device connected; after a NAK-related jam, power-cycle the sniffer";
@@ -768,17 +673,10 @@ bool select_device(CaptureApi& api, Config& config, std::string& error) {
   return true;
 }
 
-int run_list(int argc, char** argv) {
-  std::string library;
-  for (int i = 2; i < argc; ++i) {
-    if (std::string(argv[i]) == "--library" && i + 1 < argc) library = argv[++i];
-    else return emit_error("usage", "list accepts only --library PATH", 2);
-  }
-  CaptureApi api;
-  std::string error;
-  if (!api.load(library, error)) return emit_error("library_load", error, 3);
-  const char* listed = api.list_devices();
-  if (!listed) return emit_error("device_list", api.last_error(), 4);
+int run_list(int argc) {
+  if (argc != 2) return emit_error("usage", "list accepts no options", 2);
+  const char* listed = usbpv::native::list_devices();
+  if (!listed) return emit_error("device_list", native_error(), 4);
   const auto devices = split_devices(listed);
   std::cout << "{\"event\":\"devices\",\"count\":" << devices.size()
             << ",\"devices\":[";
@@ -812,46 +710,39 @@ int run_capture(int argc, char** argv) {
       return emit_error("path_exists", kind + outputs[i], 2);
     }
   }
-  CaptureApi api;
-  if (!api.load(config.library, error)) return emit_error("library_load", error, 3);
-  if (!select_device(api, config, error)) return emit_error("device_selection", error, 4);
+  if (!select_device(config, error)) return emit_error("device_selection", error, 4);
 
   CaptureContext context(config.queue_capacity, config.speed);
   const std::vector<char> options = make_open_options(config);
-  UPV_HANDLE device;
-  if (config.library.empty()) {
-    context.native_batching = true;
-    device = usbpv::native::open_device_batched(options.data(), static_cast<int>(options.size()),
-                                               &context, packet_callback, nullptr, service_callback_batch);
-  } else
-  device = api.open_device(options.data(), static_cast<int>(options.size()),
-                                      &context, packet_callback);
+  UPV_HANDLE device = usbpv::native::open_device_batched(
+      options.data(), static_cast<int>(options.size()), &context,
+      packet_callback, nullptr, service_callback_batch);
   if (!device) {
-    return emit_error("device_open", api.last_error() +
+    return emit_error("device_open", native_error() +
                                          "; power-cycle the sniffer if stale NAK traffic jammed it",
                       5);
   }
 
-  const int monitor_speed = api.get_monitor_speed(device);
+  const int monitor_speed = usbpv::native::get_monitor_speed(device);
   if (monitor_speed < 0) {
     std::cerr << "warning: could not query USBPV monitor port speed\n";
   }
   if (config.flush_ms) std::this_thread::sleep_for(std::chrono::milliseconds(config.flush_ms));
-  if (api.failed(device)) {
-    api.close_device(device);
-    return emit_error("device_read", api.last_error(), 5);
+  if (usbpv::native::failed(device)) {
+    usbpv::native::close_device(device);
+    return emit_error("device_read", native_error(), 5);
   }
 
   PcapngWriter pcap;
   const std::string description = "USBPV serial " + config.serial + ", explicit " +
                                   config.speed_name + " speed, flags " + hex_flags(config.flags);
   if (!pcap.open(config.output, link_type_for_speed(config.speed), description, error)) {
-    api.close_device(device);
+    usbpv::native::close_device(device);
     return emit_error("output_open", error, 6);
   }
   std::ofstream events(config.events, std::ios::out | std::ios::binary | std::ios::trunc);
   if (!events) {
-    api.close_device(device);
+    usbpv::native::close_device(device);
     return emit_error("output_open", "cannot create " + config.events, 6);
   }
 
@@ -864,7 +755,7 @@ int run_capture(int argc, char** argv) {
 
   std::ostringstream ready;
   ready << "{\"event\":\"ready\",\"backend\":\""
-        << (config.library.empty() ? kNativeBackend : "vendor-library")
+        << kNativeBackend
         << "\",\"serial\":\"" << json_escape(config.serial)
         << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
         << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)
@@ -878,7 +769,7 @@ int run_capture(int argc, char** argv) {
   const std::string ready_json = ready.str();
   if (!config.ready_file.empty() && !write_text_file(config.ready_file, ready_json, error)) {
     context.accepting.store(false, std::memory_order_release);
-    api.close_device(device);
+    usbpv::native::close_device(device);
     context.queue.stop();
     writer.join();
     return emit_error("ready_file", error, 6);
@@ -897,7 +788,7 @@ int run_capture(int argc, char** argv) {
       reason = "writer_error";
       break;
     }
-    if (api.failed(device)) {
+    if (usbpv::native::failed(device)) {
       reason = "device_read_error";
       break;
     }
@@ -926,7 +817,7 @@ int run_capture(int argc, char** argv) {
   }
 
   context.accepting.store(false, std::memory_order_release);
-  const int close_result = api.close_device(device);
+  const int close_result = usbpv::native::close_device(device);
   context.queue.stop();
   writer.join();
   const double elapsed = std::chrono::duration<double>(
@@ -938,7 +829,7 @@ int run_capture(int argc, char** argv) {
                   context.counters.invalid_dropped.load() == 0 &&
                   context.counters.device_overflows.load() == 0 &&
                   context.counters.speed_mismatches.load() == 0;
-  if (close_result != 0) reason = "device_close_error: " + api.last_error();
+  if (close_result != 0) reason = "device_close_error: " + native_error();
   if (writer_state.failed.load()) {
     std::lock_guard<std::mutex> lock(writer_state.error_mutex);
     reason = writer_state.error.empty() ? "writer_error" : writer_state.error;
@@ -971,7 +862,7 @@ int main(int argc, char** argv) {
     return argc < 2 ? 2 : 0;
   }
   const std::string command = argv[1];
-  if (command == "list") return run_list(argc, argv);
+  if (command == "list") return run_list(argc);
   if (command == "capture") return run_capture(argc, argv);
   return emit_error("usage", "unknown command: " + command, 2);
 }

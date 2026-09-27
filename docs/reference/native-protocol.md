@@ -1,9 +1,9 @@
 # Native CH56x capture
 
-Capture defaults to direct WinUSB access on Windows and libusb on Linux. The existing CLI,
-pcapng writer, event sidecar, and bounded writer queue remain the application
-interface. `--library PATH` explicitly selects the old vendor backend.
-Older FTDI-based sniffers still require that backend.
+Capture uses direct WinUSB access on Windows and libusb on Linux. The CLI,
+pcapng writer, event sidecar, and bounded writer queue form the application
+interface.
+Only CH56x sniffers are supported; older FTDI-based sniffers are unsupported.
 
 ## Crash diagnosis
 
@@ -26,7 +26,7 @@ controlled reproduction establishes the mechanism, not natural crash frequency.
 Local full dumps, debugger source, disassembly, and the detailed report are
 under `diagnostics/artifacts/2026-09-26/vendor-crash/` (ignored because dumps contain process memory).
 
-## Ownership and error handling
+## Windows transport and error handling
 
 One native reader thread owns an eight-entry ring of 64 KiB WinUSB reads (512 KiB
 total transport reserve) and the stream parser. Callbacks copy complete packets into the existing locked,
@@ -58,8 +58,7 @@ silently search USB payloads for a plausible new boundary.
 The Linux backend uses a private libusb context and one capture thread. It
 claims the bulk interface exclusively, checks the same manufacturer, revision,
 serial, and endpoints as Windows, and runs the same FPGA/register sequence.
-It never loads the vendor capture engine. Explicit `--library PATH` remains
-available for legacy devices.
+It never loads the vendor capture engine.
 
 Linux queues 32 asynchronous 16 KiB reads (512 KiB total). Optional
 `libusb_dev_mem_alloc` buffers avoid the usbfs completion copy; allocation
@@ -202,8 +201,9 @@ drops, invalid packets, and speed mismatches. Local captures/results are in
 `diagnostics/artifacts/2026-09-26/native/final-debug.*`. The diagnostic build in `build/usbpv_capture.exe`
 uses `native-winusb` by default, including when old vendor DLLs remain beside it.
 
-Physical low/full-speed capture, SuperSpeed monitor throughput, cable-removal
-faults, and older CH56x revisions require further hardware coverage. Passing
+Physical low/full-speed capture, cable-removal faults, and older CH56x
+revisions require further hardware coverage. SuperSpeed monitor load has since
+been tested on both platforms; see the [Linux write/read and burst results](../reports/2026-09-27/linux-native.md). Passing
 an ISO soak is not a maximum-throughput guarantee.
 
 Subsequent [USB storage stress testing with NAKs enabled](../reports/2026-09-26/usb-storage-load.md)
