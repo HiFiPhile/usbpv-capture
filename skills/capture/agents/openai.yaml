@@ -1,0 +1,4 @@
+interface:
+  display_name: "USBPV Capture"
+  short_description: "Capture USB traffic and verify USBPV capture results"
+  default_prompt: "Use $capture to record USB traffic with the USBPV sniffer and verify the capture results."
