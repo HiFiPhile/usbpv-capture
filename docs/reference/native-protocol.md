@@ -32,6 +32,9 @@ One native reader thread owns an eight-entry ring of 64 KiB WinUSB reads (512 Ki
 total transport reserve) and the stream parser. Callbacks copy complete packets into the existing locked,
 bounded writer queue. There is no vendor producer/consumer list or vendor
 capture thread in this path. The device handle is opened exclusively.
+Discovery reads `DeviceInterfaceGUIDs` from present USBPV devices' Windows
+hardware keys, with the original vendor interface GUID as a fallback. This
+also finds WinUSB installations that register a different GUID, such as Zadig.
 Enumeration and serial selection skip individual interfaces that cannot be
 opened or identified, so a busy sniffer does not block another available one.
 If every probe fails, enumeration reports the first probe error; configuration

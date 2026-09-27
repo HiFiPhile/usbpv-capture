@@ -5,13 +5,16 @@
 #include "usbpv_fpga.hpp"
 #include <windows.h>
 #include <setupapi.h>
+#include <cfgmgr32.h>
 #include <winusb.h>
+#include <objbase.h>
 #include <algorithm>
 #include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstring>
+#include <cwchar>
 #include <memory>
 #include <mutex>
 #include <stdexcept>
@@ -43,16 +46,62 @@ std::uint64_t wall_ns() {
       std::chrono::system_clock::now().time_since_epoch()).count();
 }
 
-std::vector<std::string> device_paths() {
-  const HDEVINFO set = SetupDiGetClassDevsA(&interface_guid, nullptr, nullptr,
+// Driver installers (including Zadig) can assign their own interface GUID.
+// Read the installed WinUSB registration rather than assuming the vendor INF.
+std::vector<GUID> interface_guids() {
+  std::vector<GUID> result{interface_guid};
+  const HDEVINFO set = SetupDiGetClassDevsA(nullptr, "USB", nullptr,
+                                         DIGCF_PRESENT | DIGCF_ALLCLASSES);
+  if (set == INVALID_HANDLE_VALUE) throw std::runtime_error(windows_error("enumerate USB devices"));
+  struct Guard { HDEVINFO set; ~Guard() { SetupDiDestroyDeviceInfoList(set); } } guard{set};
+  for (DWORD i = 0;; ++i) {
+    SP_DEVINFO_DATA device{};
+    device.cbSize = sizeof(device);
+    if (!SetupDiEnumDeviceInfo(set, i, &device)) {
+      if (GetLastError() == ERROR_NO_MORE_ITEMS) break;
+      throw std::runtime_error(windows_error("enumerate USB device"));
+    }
+    char id[MAX_DEVICE_ID_LEN]{};
+    check(SetupDiGetDeviceInstanceIdA(set, &device, id, static_cast<DWORD>(sizeof(id)), nullptr),
+          "read USB instance ID");
+    constexpr char prefix[] = "USB\\VID_16C0&PID_05DC";
+    constexpr auto length = sizeof(prefix) - 1;
+    if (_strnicmp(id, prefix, length) != 0 || (id[length] != '\\' && id[length] != '&'))
+      continue;
+    const HKEY key = SetupDiOpenDevRegKey(set, &device, DICS_FLAG_GLOBAL, 0,
+                                        DIREG_DEV, KEY_QUERY_VALUE);
+    if (key == INVALID_HANDLE_VALUE) continue; // Legacy GUID remains a fallback.
+    struct KeyGuard { HKEY key; ~KeyGuard() { RegCloseKey(key); } } key_guard{key};
+    DWORD type = 0, bytes = 0;
+    if (RegQueryValueExW(key, L"DeviceInterfaceGUIDs", nullptr, &type, nullptr, &bytes) != ERROR_SUCCESS ||
+        type != REG_MULTI_SZ || bytes % sizeof(wchar_t))
+      continue;
+    std::vector<wchar_t> values(bytes / sizeof(wchar_t) + 2, L'\0');
+    if (RegQueryValueExW(key, L"DeviceInterfaceGUIDs", nullptr, &type,
+                        reinterpret_cast<BYTE*>(values.data()), &bytes) != ERROR_SUCCESS ||
+        type != REG_MULTI_SZ)
+      continue;
+    for (const wchar_t* value = values.data(); *value; value += wcslen(value) + 1) {
+      GUID guid{};
+      if (FAILED(CLSIDFromString(value, &guid))) continue;
+      if (std::none_of(result.begin(), result.end(), [&](const GUID& existing) {
+            return IsEqualGUID(existing, guid);
+          }))
+        result.push_back(guid);
+    }
+  }
+  return result;
+}
+
+void append_device_paths(const GUID& guid, std::vector<std::string>& result) {
+  const HDEVINFO set = SetupDiGetClassDevsA(&guid, nullptr, nullptr,
                                          DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
   if (set == INVALID_HANDLE_VALUE) throw std::runtime_error(windows_error("enumerate WinUSB"));
   struct Guard { HDEVINFO set; ~Guard() { SetupDiDestroyDeviceInfoList(set); } } guard{set};
-  std::vector<std::string> result;
   for (DWORD i = 0;; ++i) {
     SP_DEVICE_INTERFACE_DATA item{};
     item.cbSize = sizeof(item);
-    if (!SetupDiEnumDeviceInterfaces(set, nullptr, &interface_guid, i, &item)) {
+    if (!SetupDiEnumDeviceInterfaces(set, nullptr, &guid, i, &item)) {
       if (GetLastError() == ERROR_NO_MORE_ITEMS) break;
       throw std::runtime_error(windows_error("enumerate USB interface"));
     }
@@ -64,8 +113,14 @@ std::vector<std::string> device_paths() {
     detail->cbSize = sizeof(*detail);
     check(SetupDiGetDeviceInterfaceDetailA(set, &item, detail, bytes, nullptr, nullptr),
           "read USB interface path");
-    result.emplace_back(detail->DevicePath);
+    if (std::find(result.begin(), result.end(), detail->DevicePath) == result.end())
+      result.emplace_back(detail->DevicePath);
   }
+}
+
+std::vector<std::string> device_paths() {
+  std::vector<std::string> result;
+  for (const auto& guid : interface_guids()) append_device_paths(guid, result);
   return result;
 }
 

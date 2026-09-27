@@ -4,7 +4,7 @@ CXXFLAGS ?= -O2 -std=c++17 -Wall -Wextra -Wpedantic
 ifeq ($(OS),Windows_NT)
 TARGET := usbpv_capture.exe
 LDLIBS := -static
-LDLIBS += -lwinusb -lsetupapi
+LDLIBS += -lwinusb -lsetupapi -ladvapi32 -lole32
 NATIVE_SOURCES := src/usbpv_native.cpp src/usbpv_protocol.cpp
 NATIVE_HEADER := build-make/usbpv_fpga.hpp
 NATIVE_CPPFLAGS := -Ibuild-make
