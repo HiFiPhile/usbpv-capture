@@ -24,8 +24,8 @@
 #include <thread>
 #include <vector>
 
-#ifdef _WIN32
 #include "usbpv_native.hpp"
+#ifdef _WIN32
 #ifndef NOMINMAX
 #define NOMINMAX
 #endif
@@ -38,6 +38,12 @@
 #endif
 
 namespace {
+
+#ifdef _WIN32
+constexpr const char* kNativeBackend = "native-winusb";
+#else
+constexpr const char* kNativeBackend = "native-libusb";
+#endif
 
 constexpr std::size_t kMaxPacketBytes = usbpv::kMaxPacketBytes;
 constexpr std::size_t kDefaultQueueCapacity = 16384;
@@ -150,39 +156,6 @@ std::vector<std::string> split_devices(const char* devices) {
   return result;
 }
 
-#ifndef _WIN32
-std::string executable_directory(const char* argv0) {
-  std::array<char, 4096> buffer{};
-  const ssize_t length = readlink("/proc/self/exe", buffer.data(), buffer.size() - 1);
-  std::string path = length > 0 ? std::string(buffer.data(), static_cast<std::size_t>(length))
-                                : std::string(argv0 ? argv0 : "");
-  const std::size_t slash = path.find_last_of('/');
-  return slash == std::string::npos ? "." : path.substr(0, slash);
-}
-
-std::string default_library_path(const char* argv0) {
-  const std::string filename = "libusbpv_lib.so";
-  const std::string separator = "/";
-  const std::string runtime_directory = "vendor/linux-x64";
-  const std::string executable_dir = executable_directory(argv0);
-  std::vector<std::string> candidates;
-  candidates.push_back(executable_dir + separator + filename);
-  candidates.push_back(executable_dir + separator + runtime_directory + separator + filename);
-  candidates.push_back(executable_dir + separator + ".." + separator + runtime_directory +
-                       separator + filename);
-  std::array<char, 4096> current{};
-  if (getcwd(current.data(), current.size())) {
-    const std::string current_dir(current.data());
-    candidates.push_back(current_dir + separator + filename);
-    candidates.push_back(current_dir + separator + runtime_directory + separator + filename);
-  }
-  for (const std::string& candidate : candidates) {
-    if (path_exists(candidate)) return candidate;
-  }
-  return candidates.front();
-}
-#endif
-
 class CaptureApi {
  public:
   ~CaptureApi() { unload(); }
@@ -191,7 +164,6 @@ class CaptureApi {
   CaptureApi() = default;
 
   bool load(const std::string& path, std::string& error) {
-#ifdef _WIN32
     if (path.empty()) {
       list_devices = usbpv::native::list_devices;
       open_device = usbpv::native::open_device;
@@ -201,6 +173,7 @@ class CaptureApi {
       get_monitor_speed = usbpv::native::get_monitor_speed;
       return true;
     }
+#ifdef _WIN32
     module_ = LoadLibraryExA(path.c_str(), nullptr,
                              LOAD_LIBRARY_SEARCH_DLL_LOAD_DIR |
                                  LOAD_LIBRARY_SEARCH_DEFAULT_DIRS);
@@ -240,12 +213,7 @@ class CaptureApi {
   }
 
   bool failed(UPV_HANDLE device) const {
-#ifdef _WIN32
     return !module_ && usbpv::native::failed(device);
-#else
-    (void)device;
-    return false;
-#endif
   }
 
   pfnt_upv_list_devices list_devices = nullptr;
@@ -751,7 +719,7 @@ std::string make_status_json(const char* event, const Config& config,
   out << "{\"event\":\"" << event << "\",\"complete\":"
       << (complete ? "true" : "false") << ",\"reason\":\""
       << json_escape(reason) << "\",\"backend\":\""
-      << (config.library.empty() ? "native-winusb" : "vendor-library")
+      << (config.library.empty() ? kNativeBackend : "vendor-library")
       << "\",\"serial\":\"" << json_escape(config.serial)
       << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
       << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)
@@ -806,11 +774,6 @@ int run_list(int argc, char** argv) {
     if (std::string(argv[i]) == "--library" && i + 1 < argc) library = argv[++i];
     else return emit_error("usage", "list accepts only --library PATH", 2);
   }
-#ifndef _WIN32
-  if (library.empty()) {
-    library = default_library_path(argv[0]);
-  }
-#endif
   CaptureApi api;
   std::string error;
   if (!api.load(library, error)) return emit_error("library_load", error, 3);
@@ -849,11 +812,6 @@ int run_capture(int argc, char** argv) {
       return emit_error("path_exists", kind + outputs[i], 2);
     }
   }
-#ifndef _WIN32
-  if (config.library.empty()) {
-    config.library = default_library_path(argv[0]);
-  }
-#endif
   CaptureApi api;
   if (!api.load(config.library, error)) return emit_error("library_load", error, 3);
   if (!select_device(api, config, error)) return emit_error("device_selection", error, 4);
@@ -861,13 +819,11 @@ int run_capture(int argc, char** argv) {
   CaptureContext context(config.queue_capacity, config.speed);
   const std::vector<char> options = make_open_options(config);
   UPV_HANDLE device;
-#ifdef _WIN32
   if (config.library.empty()) {
     context.native_batching = true;
     device = usbpv::native::open_device_batched(options.data(), static_cast<int>(options.size()),
                                                &context, packet_callback, nullptr, service_callback_batch);
   } else
-#endif
   device = api.open_device(options.data(), static_cast<int>(options.size()),
                                       &context, packet_callback);
   if (!device) {
@@ -908,7 +864,7 @@ int run_capture(int argc, char** argv) {
 
   std::ostringstream ready;
   ready << "{\"event\":\"ready\",\"backend\":\""
-        << (config.library.empty() ? "native-winusb" : "vendor-library")
+        << (config.library.empty() ? kNativeBackend : "vendor-library")
         << "\",\"serial\":\"" << json_escape(config.serial)
         << "\",\"speed\":\"" << config.speed_name << "\",\"filter_mask\":\""
         << hex_flags(config.flags) << "\",\"output\":\"" << json_escape(config.output)

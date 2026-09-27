@@ -1,6 +1,6 @@
 # Native capture data flow and buffers
 
-This diagram describes the current Windows native WinUSB path with the default
+This diagram describes the native WinUSB/libusb paths with the default
 16,384-slot packet queue. Blue nodes are explicit application buffers; arrows
 label payload copies and thread handoffs. Hardware, driver, C++ stream, and OS
 file-cache buffering are separate and their capacities are not specified here.
@@ -8,10 +8,10 @@ file-cache buffering are separate and their capacities are not specified here.
 ```mermaid
 flowchart TD
     BUS["Captured USB bus"] --> HW["Sniffer FPGA / FIFO<br/>hardware filters and timestamps"]
-    HW --> USB["Monitor USB link / WinUSB"]
+    HW --> USB["Monitor USB link / WinUSB or libusb"]
 
     subgraph READER["Native reader thread"]
-        RX["Overlapped read ring<br/>8 × 64 KiB = 512 KiB"]
+        RX["Async read ring: 512 KiB<br/>Windows: 8 × 64 KiB<br/>Linux: 32 × 16 KiB"]
         PARSE["Protocol parser"]
         FRAG["Fragment / control-record buffer<br/>1,056 bytes"]
         VALID["Callback validation"]
@@ -65,7 +65,8 @@ packets such as NAKs; copies use actual payload length.
 
 | Buffer | Capacity | Definition |
 | --- | --- | --- |
-| Pending WinUSB reads | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native.cpp) |
+| Pending Windows reads | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native.cpp) |
+| Pending Linux reads (alternative) | 524,288 bytes | [`capture_read_bytes`, `capture_read_count`, `Device::capture`](../../src/usbpv_native_linux.cpp) |
 | Parser fragment record | 1,056 bytes | [`ProtocolParser::record_`](../../src/usbpv_protocol.hpp) |
 | Reader callback staging | 528,384 bytes | [`CaptureContext::pending`, 256 slots](../../src/usbpv_capture_queue.hpp) |
 | Shared packet/event queue | 33,816,576 bytes by default | [`PacketQueue::slots_`, `PacketSlot`](../../src/usbpv_queue.hpp); capacity comes from [`kDefaultQueueCapacity` / `--queue-capacity`](../../src/usbpv_capture.cpp) |
@@ -90,7 +91,7 @@ and speed mismatches are counted rather than staged.
 Full callback batches publish immediately. Partial batches span transfers
 with a 1 ms target; active traffic does not extend their deadline. A pending
 batch causes a 1 ms reader wait, whose timeout forces publication. Stop,
-parser errors, and reader exit also publish the tail. Windows scheduling can
+parser errors, and reader exit also publish the tail. OS scheduling can
 exceed this target. Host activity and total callbacks update per transfer;
 accepted-packet counters update when batches enter the queue.
 

@@ -14,24 +14,40 @@ cmake -S . -B build
 cmake --build build --config Release
 ```
 
-Linux x86-64:
+Linux:
 
 ```sh
+sudo apt-get install build-essential cmake pkg-config libusb-1.0-0-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-On Windows, the default backend talks directly to CH56x sniffers through
-WinUSB. It implements FPGA setup, register commands, stream framing, filters,
-and timestamps without loading the vendor DLL. Existing CLI invocations keep
-working; ready/summary JSON identifies this backend as `native-winusb`.
+The native backend talks directly to CH56x sniffers through WinUSB on Windows
+and libusb on Linux. Both implement FPGA setup, register commands, stream
+framing, filters, and timestamps without loading the vendor capture runtime.
+Ready/summary JSON identifies them as `native-winusb` and `native-libusb`.
 
-Pass an absolute `--library` path only to opt into the legacy vendor engine
-(for example, for an older FTDI sniffer). That path retains the vendor's
-known capture-queue race. See [native protocol details](../reference/native-protocol.md).
-Linux continues to discover and use the bundled vendor library. CMake copies
-vendor runtimes by default on Linux, but not on Windows; the copy option is
-`USBPV_COPY_VENDOR_RUNTIME`.
+Pass an absolute `--library` path to opt into the legacy vendor engine (for
+example, for an older FTDI sniffer). The Windows DLL retains its known
+capture-queue race. See [native protocol details](../reference/native-protocol.md).
+CMake defaults `USBPV_COPY_VENDOR_RUNTIME=OFF` on both platforms; existing
+build directories retain their cached setting.
+
+### Linux USB permissions
+
+Install the system libusb runtime (`libusb-1.0-0` on Debian/Ubuntu). The capture
+user needs read/write access to the sniffer's `/dev/bus/usb` node. For desktop
+sessions using systemd-logind, an administrator can install this rule in
+`/etc/udev/rules.d/70-usbpv.rules`, reload udev rules, and reconnect the sniffer:
+
+```udev
+SUBSYSTEM=="usb", ATTR{idVendor}=="16c0", ATTR{idProduct}=="05dc", ATTR{manufacturer}=="tusb.org", TAG+="uaccess"
+```
+
+For headless operation, grant access to a dedicated group using local udev
+policy. The backend claims the USB interface exclusively and does not detach
+kernel drivers or change the active USB configuration. A busy or inaccessible
+sniffer returns a JSON error.
 
 ## Agent workflow
 
@@ -82,7 +98,7 @@ The native reader stages up to 256 validated packets (about 516 KiB) before
 inserting them into the bounded packet queue with one lock operation. A
 partial batch can span USB transfers, with a 1 ms publication target. A full
 batch publishes immediately; idle waits, stop, and reader errors flush the
-tail. Windows scheduling can delay publication beyond this target. Total
+tail. OS scheduling can delay publication beyond this target. Total
 callback count and host-side activity time update at each transfer; successful
 packet counters update when publishing. Captured USB timestamps are unchanged.
 The legacy callback path continues to publish each packet immediately. See

@@ -1,10 +1,9 @@
-# Native Windows CH56x capture
+# Native CH56x capture
 
-Windows capture now defaults to direct WinUSB access. The existing CLI,
+Capture defaults to direct WinUSB access on Windows and libusb on Linux. The existing CLI,
 pcapng writer, event sidecar, and bounded writer queue remain the application
 interface. `--library PATH` explicitly selects the old vendor backend.
-Linux and older FTDI-based sniffers still use that backend; they are outside
-the scope of this Windows CH56x fix.
+Older FTDI-based sniffers still require that backend.
 
 ## Crash diagnosis
 
@@ -53,6 +52,40 @@ Malformed records/checksums, transport failures, missing start/stop markers,
 hardware error flags, device overflow, and writer-queue loss cannot produce
 a successful final summary. Parser failures are sticky; the parser does not
 silently search USB payloads for a plausible new boundary.
+
+## Linux transport
+
+The Linux backend uses a private libusb context and one capture thread. It
+claims the bulk interface exclusively, checks the same manufacturer, revision,
+serial, and endpoints as Windows, and runs the same FPGA/register sequence.
+It never loads the vendor capture engine. Explicit `--library PATH` remains
+available for legacy devices.
+
+Linux queues 32 asynchronous 16 KiB reads (512 KiB total). Optional
+`libusb_dev_mem_alloc` buffers avoid the usbfs completion copy; allocation
+failure falls back to ordinary buffers. Completions only mark reads ready.
+The reader parses them in submission order and requeues them after callbacks
+have copied their payloads. One event dispatch can complete several reads.
+During an active SuperSpeed capture, the reader waits 250 microseconds before
+an event dispatch when the next read is not yet ready. This groups short USB
+completions and reduces Linux kernel wakeup overhead; submitted reads continue
+receiving during that interval. USB 2.0 and start/stop handshakes skip this wait.
+The interval is a service target, not a hard timing guarantee under scheduling
+load. Windows retains eight 64 KiB WinUSB reads and its existing policies.
+
+Stream reads have no transfer timeout. Event waits are bounded to 20 ms,
+shortening to 1 ms when a callback batch is pending. Start and stop markers
+retain two-second deadlines. All submitted reads are cancelled and their
+callbacks reaped before freeing transfers, DMA memory, or the USB handle,
+including partial startup failures. This follows libusb's
+[asynchronous transfer ownership contract](https://libusb.sourceforge.io/api-1.0/group__libusb__asyncio.html).
+
+The `native_linux` CTest suite injects libusb failures without hardware. It
+covers partial submissions, disconnect completions, malformed streams,
+missing start/stop markers, split records, reordered completion callbacks,
+DMA and fallback buffers, and cleanup ownership. See the
+[Linux load measurements](../reports/2026-09-27/linux-native.md) for hardware
+validation and the limits of the tuning results.
 
 ## Recovered wire format
 
@@ -129,7 +162,8 @@ application/bootloader flash programming is not implemented.
 - Image SHA-256: `04faecd4c1dc95a60b2bc0df32096a0c610a4e84f5d4287382578072dbf1db2a`
 
 The existing vendor redistribution caveat still applies to this image.
-No DLL/SO needs to accompany a deployed native Windows executable.
+No vendor DLL/SO needs to accompany a deployed native executable. Linux uses
+the system libusb runtime.
 
 ## Validation
 

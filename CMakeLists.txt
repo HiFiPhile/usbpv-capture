@@ -4,14 +4,9 @@ project(usbpv_agent_capture VERSION 1.0.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 
-if(WIN32)
-  set(USBPV_VENDOR_RUNTIME_DEFAULT OFF)
-else()
-  set(USBPV_VENDOR_RUNTIME_DEFAULT ON)
-endif()
 option(USBPV_COPY_VENDOR_RUNTIME
        "Copy the bundled vendor runtime beside usbpv_capture"
-       ${USBPV_VENDOR_RUNTIME_DEFAULT})
+       OFF)
 
 add_executable(usbpv_capture src/usbpv_capture.cpp src/usbpv_output.cpp)
 target_compile_features(usbpv_capture PRIVATE cxx_std_17)
@@ -30,7 +25,7 @@ if(MINGW)
   target_link_options(usbpv_capture PRIVATE -static)
 endif()
 
-if(WIN32)
+if(WIN32 OR CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set(USBPV_FPGA_HEADER "${CMAKE_CURRENT_BINARY_DIR}/usbpv_fpga.hpp")
   add_custom_command(OUTPUT "${USBPV_FPGA_HEADER}"
     COMMAND "${CMAKE_COMMAND}"
@@ -39,14 +34,36 @@ if(WIN32)
       -P "${CMAKE_CURRENT_SOURCE_DIR}/tools/embed-fpga.cmake"
     DEPENDS vendor/linux-x64/libusbpv_lib.so tools/embed-fpga.cmake
     VERBATIM)
-  target_sources(usbpv_capture PRIVATE src/usbpv_native.cpp
-    src/usbpv_protocol.cpp "${USBPV_FPGA_HEADER}")
+  target_sources(usbpv_capture PRIVATE src/usbpv_protocol.cpp "${USBPV_FPGA_HEADER}")
   target_include_directories(usbpv_capture PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
+endif()
+if(WIN32)
+  target_sources(usbpv_capture PRIVATE src/usbpv_native.cpp)
   target_link_libraries(usbpv_capture PRIVATE winusb setupapi)
+elseif(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  find_package(PkgConfig REQUIRED)
+  pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0>=1.0.21)
+  target_sources(usbpv_capture PRIVATE src/usbpv_native_linux.cpp)
+  target_link_libraries(usbpv_capture PRIVATE PkgConfig::LIBUSB)
+else()
+  message(FATAL_ERROR "Native capture supports Windows and Linux")
 endif()
 
 include(CTest)
 if(BUILD_TESTING)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    add_executable(usbpv_native_linux_test tests/native_linux_test.cpp
+      src/usbpv_native_linux.cpp src/usbpv_protocol.cpp "${USBPV_FPGA_HEADER}")
+    target_compile_features(usbpv_native_linux_test PRIVATE cxx_std_17)
+    target_include_directories(usbpv_native_linux_test PRIVATE include src
+      "${CMAKE_CURRENT_BINARY_DIR}")
+    # Link only the fake USB API: a missing stub must fail at link time rather
+    # than accidentally opening real hardware during CTest.
+    target_include_directories(usbpv_native_linux_test SYSTEM PRIVATE ${LIBUSB_INCLUDE_DIRS})
+    target_link_libraries(usbpv_native_linux_test PRIVATE pthread)
+    add_test(NAME native_linux COMMAND usbpv_native_linux_test)
+    set_tests_properties(native_linux PROPERTIES TIMEOUT 20)
+  endif()
   add_executable(usbpv_device_scan_test tests/device_scan_test.cpp)
   target_compile_features(usbpv_device_scan_test PRIVATE cxx_std_17)
   target_include_directories(usbpv_device_scan_test PRIVATE src)

@@ -1,7 +1,7 @@
 #pragma once
 #include "usbpv_lib.h"
 
-// Windows CH56x/WinUSB backend; preserves the callback ABI used by the writer.
+// CH56x backend (WinUSB on Windows, libusb on Linux); preserves the callback ABI used by the writer.
 namespace usbpv::native {
 const char* UPV_CALL list_devices();
 UPV_HANDLE UPV_CALL open_device(const char*, int, void*, pfn_packet_handler);

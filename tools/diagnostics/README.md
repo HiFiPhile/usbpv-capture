@@ -1,4 +1,4 @@
-# Windows diagnostic tools
+# Diagnostic tools
 
 These are explicit lab commands, separate from the normal capture build and
 CTest. The workload helper is restricted to the previously verified flash
@@ -66,3 +66,59 @@ python tools/diagnostics/profile_cpu.py --exe build-diagnostics-tools/labelled/c
 
 Historical experiments, including debugger reproducers and superseded source
 rewriting scripts, remain intact in the [dated archive](../../diagnostics/README.md).
+
+## Linux read-only USB storage load
+
+Build the Linux capture and analyzer with CMake. This explicit lab runner opens
+only the verified USB disk (`0011:7788`, serial `C4D197AC`) read-only with
+`O_DIRECT`. It alternates 1 MiB sequential and 4 KiB random reads within the
+first 64 MiB. It never writes to the disk or changes its mount options. The
+capture records the returned USB payloads, so keep its artifacts private.
+
+```sh
+cmake -S tools/diagnostics -B build-linux-tools -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux-tools -j
+python tools/diagnostics/run_linux_storage_load.py --exe build-linux/usbpv_capture \
+  --seconds 15 --output diagnostics/artifacts/linux-load-01
+build-linux-tools/analyze_load diagnostics/artifacts/linux-load-01/traffic.pcapng
+```
+
+The user must already have access to the sniffer and read access to the disk.
+The runner verifies the opened device's USB identity through sysfs, saves
+read throughput and capture process CPU samples from `/proc`, and fails if
+the final capture reports loss. 100% CPU means one logical processor. Output
+must be a new directory. Avoid builds and capture analysis during measurement.
+This read-only Linux workload differs from the Windows write/read workload.
+
+## Linux workload matching Windows
+
+`usb_storage_load_linux` performs the same application I/O pattern as the
+Windows helper: a new 64 MiB file, 1 MiB sequential synchronous writes using
+pattern `(i * 131 + 17) & 255`, then 15 seconds alternating two-second phases
+of 1 MiB sequential and 4 KiB random reads. It uses the same PRNG, offsets,
+and byte-by-byte read verification. `O_DIRECT | O_SYNC` supplies uncached,
+synchronous Linux I/O; underlying OS/filesystem command sequences can differ.
+
+The helper verifies that the opened destination directory is on USB disk
+`0011:7788`, serial `C4D197AC`, before creating a file with `O_EXCL`. It unlinks
+only that newly created file while its handle is open, so closing the handle
+reclaims it on success, errors, or process termination. Existing files are
+never opened for writing. The Linux disk must be mounted writable on the host.
+A restricted sandbox may expose a read-only view of an otherwise writable mount.
+
+```sh
+cmake -S tools/diagnostics -B build-linux-tools -DCMAKE_BUILD_TYPE=Release
+cmake --build build-linux-tools -j
+python tools/diagnostics/run_linux_storage_write_load.py \
+  --directory /run/media/mengsk/27F9-218C \
+  --output diagnostics/artifacts/linux-write-read-01
+build-linux-tools/analyze_load diagnostics/artifacts/linux-write-read-01/traffic.pcapng
+```
+
+The runner matches the Windows profiler's capture flags, default queue,
+initial/final two-second idle intervals, and 250 ms CPU sampling. It measures
+capture process user plus kernel CPU over the complete write/read helper
+lifetime; 100% means one logical processor. It saves workload verification,
+write/read throughput, CPU samples, and capture completeness counters. The
+output directory must be new. The helper is an explicit hardware tool and
+is never invoked by CTest or during builds.

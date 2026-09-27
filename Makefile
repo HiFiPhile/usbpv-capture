@@ -11,7 +11,10 @@ NATIVE_CPPFLAGS := -Ibuild-make
 SAMPLE_LIBS := -lpthread
 else
 TARGET := usbpv_capture
-LDLIBS := -ldl -pthread
+LDLIBS := -ldl -pthread $(shell pkg-config --libs libusb-1.0)
+NATIVE_SOURCES := src/usbpv_native_linux.cpp src/usbpv_protocol.cpp
+NATIVE_HEADER := build-make/usbpv_fpga.hpp
+NATIVE_CPPFLAGS := -Ibuild-make $(patsubst -I%,-isystem %,$(shell pkg-config --cflags libusb-1.0))
 SAMPLE_LIBS := -ldl -pthread
 endif
 
@@ -19,7 +22,7 @@ endif
 
 all: $(TARGET)
 
-$(TARGET): src/usbpv_capture.cpp src/usbpv_output.cpp src/usbpv_output.hpp src/usbpv_queue.hpp src/usbpv_capture_queue.hpp include/usbpv_lib.h $(NATIVE_SOURCES) $(NATIVE_HEADER) src/usbpv_protocol.hpp src/usbpv_native.hpp
+$(TARGET): src/usbpv_capture.cpp src/usbpv_output.cpp src/usbpv_output.hpp src/usbpv_queue.hpp src/usbpv_capture_queue.hpp include/usbpv_lib.h $(NATIVE_SOURCES) $(NATIVE_HEADER) src/usbpv_protocol.hpp src/usbpv_native.hpp src/usbpv_device_scan.hpp
 	$(CXX) $(CXXFLAGS) $(NATIVE_CPPFLAGS) -Iinclude -o $@ src/usbpv_capture.cpp src/usbpv_output.cpp $(NATIVE_SOURCES) $(LDLIBS)
 
 build-make/usbpv_fpga.hpp: tools/embed-fpga.cmake vendor/linux-x64/libusbpv_lib.so

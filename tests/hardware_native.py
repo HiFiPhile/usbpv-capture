@@ -6,6 +6,7 @@ Never runs the vendor capture library or changes the USB device under test.
 import argparse
 import collections
 import json
+import os
 from pathlib import Path
 import subprocess
 
@@ -17,7 +18,7 @@ def main():
     ap.add_argument("--runs", type=int, default=5)
     ap.add_argument("--seconds", type=float, default=20)
     ap.add_argument("--restarts", type=int, default=50)
-    ap.add_argument("--tshark", default="C:/Program Files/Wireshark/tshark.exe")
+    ap.add_argument("--tshark", default="C:/Program Files/Wireshark/tshark.exe" if os.name == "nt" else "tshark")
     args = ap.parse_args()
     args.output.mkdir(parents=True, exist_ok=False)
     results = []

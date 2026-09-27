@@ -14,7 +14,7 @@ unless stated otherwise.
 
 - [Capture data flow and buffers](reference/capture-data-flow.md): thread
   boundaries, buffer capacities, payload copies, and output ownership.
-- [Native CH56x protocol](reference/native-protocol.md): WinUSB transport,
+- [Native CH56x protocol](reference/native-protocol.md): WinUSB/libusb transports,
   register commands, stream framing, timestamps, crash diagnosis, and validation.
 - [Vendor API](reference/vendor-api.md): original vendor API documentation.
 
@@ -32,6 +32,9 @@ they are not maximum-throughput guarantees.
 | [CPU optimization](reports/2026-09-26/cpu-optimization.md) | Native callback batching reduced measured CPU by 23–33% in the recorded comparisons. |
 
 ## Follow-up — 2026-09-27
+
+- [Native Linux backend and tuning](reports/2026-09-27/linux-native.md):
+  libusb transport, USB disk read load, CPU comparisons, and fault tests.
 
 - [CPU optimization across USB transfers](reports/2026-09-27/cpu-optimization.md):
   bounded callback coalescing, direct record decoding, and measured transport experiments.

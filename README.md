@@ -8,8 +8,8 @@ The program requires an explicit low/full/high capture speed, disables SOF and
 NAK traffic by default, moves disk I/O out of the capture callback, and writes
 Wireshark/TShark-readable pcapng plus machine-readable JSON status files.
 
-On Windows, CH56x sniffers use a native WinUSB protocol implementation by
-default. This removes the vendor DLL's capture-queue race that caused access
+CH56x sniffers use native capture by default: WinUSB on Windows and libusb
+on Linux. This removes the vendor DLL's capture-queue race that caused access
 violations during ISO captures. No vendor DLL is loaded for native capture.
 See [protocol and crash diagnosis](docs/reference/native-protocol.md).
 
@@ -41,21 +41,22 @@ cmake --build build --config Release
 Linux x86-64:
 
 ```sh
-sudo apt-get install build-essential cmake libudev1
+sudo apt-get install build-essential cmake pkg-config libusb-1.0-0-dev
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build -j
 ```
 
-Windows builds embed the sniffer's existing volatile FPGA image as data from
-the bundled SDK; they need only Windows' WinUSB runtime when deployed.
+Windows and Linux builds embed the sniffer's existing volatile FPGA image as data from
+the bundled SDK; deployed builds use WinUSB or the system libusb runtime.
 `--library PATH` explicitly opts into the legacy DLL backend, including its
 known capture race. Older FTDI sniffers require that legacy backend.
 
-Linux still uses the vendor backend; its capture engine has not been replaced.
-CMake copies the runtime by default on Linux (`USBPV_COPY_VENDOR_RUNTIME=ON`)
-and defaults to `OFF` on Windows. The Linux vendor
-library is x86-64 and depends on `libudev.so.1`, `libstdc++.so.6`,
-`libgcc_s.so.1`, and `libc.so.6`.
+Linux ready/summary JSON reports `native-libusb`. The USB device node must be
+readable and writable by the capture user; a desktop session may already grant
+access. See the [Linux permissions guide](docs/guides/agent-capture.md#linux-usb-permissions).
+CMake defaults `USBPV_COPY_VENDOR_RUNTIME=OFF` on both platforms. Explicit
+`--library PATH` still selects the legacy runtime; the bundled Linux library
+is x86-64 and also needs `libudev.so.1`.
 
 Run parser, output, queue, and callback tests with `ctest --test-dir build --output-on-failure`
 (add `-C Release` for Visual Studio builds).
